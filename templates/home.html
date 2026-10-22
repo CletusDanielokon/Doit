@@ -1,0 +1,292 @@
+{% extends "base.html" %}
+{% block title %}My Dashboard – Do.iT{% endblock %}
+{% block robots %}noindex,nofollow{% endblock %}
+{% block body_class %}appbody{% endblock %}
+{% block content %}
+<div class="shell">
+  <nav class="nav" id="nav" aria-label="Main">
+    <a class="nav-brand" href="{{ url_for('landing') }}"><img src="{{ asset('images/icon-192.png') }}" alt="" width="36" height="36"><span>Do.iT</span></a>
+    <button class="nav-btn" data-tab="home"><svg class="ic"><use href="#i-home"/></svg><span>Home</span></button>
+    <button class="nav-btn" data-tab="tasks"><svg class="ic"><use href="#i-tasks"/></svg><span>Tasks</span></button>
+    <button class="nav-fab" id="fab" aria-label="Add a new task"><svg class="ic"><use href="#i-plus"/></svg><span class="fab-text" id="fab-text">New task</span></button>
+    <button class="nav-btn" data-tab="timetable"><svg class="ic"><use href="#i-table"/></svg><span>Timetable</span></button>
+    <button class="nav-btn" data-tab="notes"><svg class="ic"><use href="#i-book"/></svg><span>Diary</span></button>
+    <button class="nav-btn nav-ai" id="nav-ai"><svg class="ic"><use href="#i-sparkle"/></svg><span>Ask AI</span></button>
+    <button class="nav-btn nav-me" data-tab="me"><svg class="ic"><use href="#i-user"/></svg><span>Profile</span></button>
+  </nav>
+
+  <main class="main" id="main">
+    <!-- HOME -->
+    <section class="page" data-page="home" aria-labelledby="greeting">
+      <header class="topbar">
+        <button class="avatar" data-go="me" aria-label="Open profile" id="avatar"></button>
+        <div class="who"><small id="today-date"></small><h1 id="greeting"></h1></div>
+        <button class="round-btn" id="btn-ai" aria-label="Ask the AI assistant" title="Ask AI"><svg class="ic"><use href="#i-sparkle"/></svg></button>
+        <button class="round-btn" id="btn-alarm" aria-label="Alarm sound status" title="Alarm sound"><svg class="ic"><use href="#i-bell"/></svg><i class="pip" id="alarm-pip"></i></button>
+      </header>
+      <button class="sound-banner" id="sound-banner" hidden>
+        <span class="sb-ic"><svg class="ic"><use href="#i-volume"/></svg></span>
+        <span class="sb-txt"><b>Turn on alarm sound</b><small>Tap once so your reminders can ring out loud.</small></span>
+        <span class="btn sm light">Enable</span>
+      </button>
+
+      <div class="home-grid">
+        <div class="col col-a">
+          <div class="hero o1">
+            <div class="hero-top"><span>Today's progress</span><span class="streak-chip"><svg class="ic"><use href="#i-flame"/></svg> <b id="st-streak">0</b> day streak</span></div>
+            <div class="hero-main">
+              <div><div class="hero-big" id="hero-big">0%</div><div class="hero-sub" id="summary"></div></div>
+              <div class="week" id="week" aria-label="Tasks completed in the last 7 days"></div>
+            </div>
+            <div class="progress" aria-hidden="true"><i id="progress-bar"></i></div>
+            <button class="next-strip" id="next-strip" data-go="timetable" hidden></button>
+          </div>
+          <div class="quick-grid o2" role="list">
+            <button class="qa" role="listitem" data-view="today"><span class="qi"><svg class="ic"><use href="#i-cal"/></svg></span><b id="st-today">0</b><small>Today</small></button>
+            <button class="qa" role="listitem" data-view="upcoming"><span class="qi"><svg class="ic"><use href="#i-tasks"/></svg></span><b id="st-upcoming">0</b><small>Upcoming</small></button>
+            <button class="qa warn" role="listitem" data-view="overdue"><span class="qi"><svg class="ic"><use href="#i-bell"/></svg></span><b id="st-overdue">0</b><small>Overdue</small></button>
+            <button class="qa ok" role="listitem" data-view="done"><span class="qi"><svg class="ic"><use href="#i-check"/></svg></span><b id="st-done">0</b><small>Done</small></button>
+          </div>
+          <div class="o3">
+            <form class="quick" id="quick" autocomplete="off">
+              <svg class="ic"><use href="#i-plus"/></svg>
+              <input id="quick-input" type="text" maxlength="255" placeholder="Quick add: Call Frank tomorrow 5pm !high #family" aria-label="Quick add a task">
+              <button class="mic" type="button" id="quick-mic" aria-label="Speak your task" title="Speak your task"><svg class="ic"><use href="#i-mic"/></svg></button>
+              <button class="btn primary sm" type="submit">Add</button>
+            </form>
+            <div class="chips" id="quick-preview" aria-live="polite"></div>
+          </div>
+          <div class="o5"><div class="sec-head"><h2>Up next</h2><button class="link" data-go="tasks">See all tasks</button></div><div id="upnext" class="list"></div></div>
+        </div>
+
+        <div class="col col-b">
+          <section class="card o4" aria-labelledby="ag-h">
+            <div class="card-head"><h2 id="ag-h">Today's agenda</h2><button class="link" data-go="timetable">Timetable</button></div>
+            <div id="agenda" class="agenda"></div>
+          </section>
+          <section class="card diary-prompt o6" aria-labelledby="dp-h">
+            <div class="card-head"><h2 id="dp-h">Today's diary</h2></div>
+            <p class="muted" id="dp-text"></p>
+            <button class="btn primary sm" id="dp-btn"><svg class="ic"><use href="#i-edit"/></svg> <span id="dp-btn-t">Write today's entry</span></button>
+          </section>
+          <section class="card focus o7" aria-labelledby="focus-h">
+            <div class="card-head"><h2 id="focus-h">Focus timer</h2><span class="muted small">Sessions today: <b id="f-count">0</b></span></div>
+            <div class="mode-seg" id="f-mode" role="radiogroup" aria-label="Timer mode">
+              <button data-m="25" aria-checked="true">Focus</button><button data-m="5" aria-checked="false">Short break</button><button data-m="15" aria-checked="false">Long break</button></div>
+            <div class="focus-row">
+              <div class="ring"><svg viewBox="0 0 120 120" aria-hidden="true"><circle class="ring-bg" cx="60" cy="60" r="54"/><circle class="ring-fg" id="ring-fg" cx="60" cy="60" r="54"/></svg>
+                <div class="ring-time" id="f-time" role="timer">25:00</div></div>
+              <div class="focus-side">
+                <label class="field"><span class="label">Working on</span><select id="f-task"><option value="">No task selected</option></select></label>
+                <div class="f-btns"><button class="btn primary" id="f-start"><svg class="ic"><use href="#i-play"/></svg> Start</button><button class="btn" id="f-reset">Reset</button></div>
+              </div>
+            </div>
+          </section>
+          <figure class="quote o8"><div class="orn" aria-hidden="true"><span>&#10086;</span></div><blockquote id="quote-text"></blockquote><figcaption id="quote-by"></figcaption></figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- TASKS -->
+    <section class="page" data-page="tasks" aria-labelledby="tasks-h" hidden>
+      <header class="page-head"><div><h1 id="tasks-h">My tasks</h1><p class="muted">Everything you need to do, in one place.</p></div>
+        <div class="head-tools"><div class="view-toggle" id="tview" role="radiogroup" aria-label="Task view"><button data-v="list" aria-checked="true"><svg class="ic"><use href="#i-list2"/></svg> List</button><button data-v="cal" aria-checked="false"><svg class="ic"><use href="#i-cal"/></svg> Calendar</button></div>
+        <button class="btn sm" id="btn-clear" hidden>Clear done</button></div></header>
+      <div id="tasks-list">
+        <div class="tools">
+          <label class="search"><svg class="ic"><use href="#i-search"/></svg><input id="search" type="search" placeholder="Search tasks" aria-label="Search tasks"></label>
+          <select id="f-prio" aria-label="Filter by priority"><option value="">Any priority</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
+          <select id="f-sort" aria-label="Sort tasks"><option value="smart">Smart order</option><option value="due">Due date</option><option value="priority">Priority</option><option value="newest">Newest</option><option value="alpha">A to Z</option></select>
+        </div>
+        <div class="tabs" role="tablist" id="tabs"></div>
+        <div class="tagbar" id="tagbar"></div>
+        <div id="list" class="list" aria-live="polite"></div>
+      </div>
+      <div id="tasks-cal" hidden>
+        <div class="split">
+          <div class="card cal">
+            <div class="cal-head"><button class="round-btn" id="cal-prev" aria-label="Previous month"><svg class="ic"><use href="#i-chevl"/></svg></button>
+              <b id="cal-title"></b><button class="round-btn" id="cal-next" aria-label="Next month"><svg class="ic"><use href="#i-chevr"/></svg></button></div>
+            <div class="cal-dow"><span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span></div>
+            <div class="cal-grid" id="cal-grid"></div>
+          </div>
+          <div><div class="sec-head"><h2 id="cal-day-title">Selected day</h2></div><div id="cal-list" class="list"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TIMETABLE -->
+    <section class="page" data-page="timetable" aria-labelledby="tt-h" hidden>
+      <header class="page-head"><div><h1 id="tt-h">Weekly timetable</h1><p class="muted">Plan your week. Do.iT reminds you 30 minutes and 5 minutes before, and at the start time.</p></div>
+        <div class="head-tools">
+          <div class="view-toggle" id="tt-view" role="radiogroup" aria-label="Timetable view"><button data-v="table" aria-checked="true"><svg class="ic"><use href="#i-table"/></svg> Table</button><button data-v="day" aria-checked="false"><svg class="ic"><use href="#i-list2"/></svg> Day</button></div>
+          <button class="btn sm" id="tt-print"><svg class="ic"><use href="#i-print"/></svg> Print</button>
+          <button class="btn primary sm" id="tt-add"><svg class="ic"><use href="#i-plus"/></svg> Add activity</button></div></header>
+      <div class="tt-now" id="tt-now" aria-live="polite"></div>
+      <div id="tt-day-tabs" class="day-tabs" role="tablist" hidden></div>
+      <div class="tt-scroll" id="tt-wrap"></div>
+      <div id="tt-day" class="list" hidden></div>
+      <p class="muted small tt-foot">Tip: tap an activity to edit it, or tap an empty cell to add one at that time. <button class="link" id="tt-clear">Clear timetable</button></p>
+    </section>
+
+    <!-- NOTES / DIARY -->
+    <section class="page" data-page="notes" aria-labelledby="nt-h" hidden>
+      <header class="page-head"><div><h1 id="nt-h">My diary</h1><p class="muted">A private place to write down your day. Entries save automatically.</p></div>
+        <div class="head-tools"><button class="btn primary sm" id="nt-new"><svg class="ic"><use href="#i-plus"/></svg> New entry</button></div></header>
+      <div class="notes-wrap" id="notes-wrap">
+        <aside class="notes-side">
+          <label class="search"><svg class="ic"><use href="#i-search"/></svg><input id="nt-search" type="search" placeholder="Search your diary" aria-label="Search diary"></label>
+          <div id="nt-list" class="nt-list"></div>
+        </aside>
+        <article class="notes-edit" id="nt-edit" hidden>
+          <div class="ne-bar"><button class="btn sm nt-back" id="nt-back"><svg class="ic"><use href="#i-chevl"/></svg> Entries</button>
+            <input id="nt-date" type="date" aria-label="Entry date">
+            <span class="grow"></span>
+            <button class="round-btn flat" id="nt-pin" aria-label="Pin entry" title="Pin entry"><svg class="ic"><use href="#i-pin"/></svg></button>
+            <button class="round-btn flat" id="nt-del" aria-label="Delete entry" title="Delete entry"><svg class="ic"><use href="#i-trash"/></svg></button></div>
+          <div class="moods" id="nt-moods" role="radiogroup" aria-label="How was your day?"></div>
+          <div class="nt-tools">
+            <button type="button" class="btn sm mic-btn" id="nt-mic" aria-pressed="false"><svg class="ic"><use href="#i-mic"/></svg><span>Speak</span></button>
+            <select id="nt-lang" aria-label="Speaking language"><option value="en-NG">English (Nigeria)</option><option value="en-GB">English (UK)</option><option value="en-US">English (US)</option><option value="fr-FR">Français</option></select>
+            <span class="grow"></span>
+            <button type="button" class="btn sm ai-btn" data-ai-note="polish" title="Fix punctuation and grammar"><svg class="ic"><use href="#i-sparkle"/></svg> Tidy up</button>
+            <button type="button" class="btn sm ai-btn" data-ai-note="summarize"><svg class="ic"><use href="#i-sparkle"/></svg> Summarize</button>
+            <button type="button" class="btn sm ai-btn" data-ai-note="reflect"><svg class="ic"><use href="#i-sparkle"/></svg> Reflect</button>
+          </div>
+          <p class="muted small nt-hint" id="nt-hint" hidden>Listening… say “full stop”, “comma”, “new line” or “new paragraph” to format as you speak.</p>
+          <input id="nt-title" class="nt-title" type="text" maxlength="150" placeholder="Title (optional)" aria-label="Entry title">
+          <textarea id="nt-body" class="paper" placeholder="Dear diary…" aria-label="Diary entry"></textarea>
+          <div class="ai-out" id="nt-ai" hidden><div class="ai-out-head"><b><svg class="ic"><use href="#i-sparkle"/></svg> <span id="nt-ai-title">AI</span></b><button class="round-btn flat" id="nt-ai-x" aria-label="Close"><svg class="ic"><use href="#i-x"/></svg></button></div>
+            <div id="nt-ai-text" class="ai-text"></div><div class="ai-actions"><button class="btn primary sm" id="nt-ai-replace" hidden>Replace my entry</button><button class="btn sm" id="nt-ai-append">Add to entry</button></div></div>
+          <div class="ne-foot"><span id="nt-status" class="muted small">Ready</span><span id="nt-count" class="muted small"></span></div>
+        </article>
+        <div class="notes-empty" id="nt-empty"><div class="orn" aria-hidden="true"><span>&#10086;</span></div><h2>Open a page of your diary</h2><p class="muted">Choose an entry on the left, or begin a new one.</p>
+          <button class="btn primary" id="nt-today">Write today's entry</button></div>
+      </div>
+    </section>
+
+    <!-- PROFILE -->
+    <section class="page" data-page="me" aria-labelledby="me-h" hidden>
+      <header class="page-head"><div><h1 id="me-h">Profile</h1></div></header>
+      <div class="split me-split">
+        <div>
+          <div class="card profile"><div class="avatar lg" id="avatar-lg"></div><div><b id="me-name"></b><small id="me-user"></small></div></div>
+          <div class="stat-row"><div class="card mini"><b id="me-total">0</b><small>Completed</small></div><div class="card mini"><b id="me-week">0</b><small>This week</small></div><div class="card mini"><b id="me-rate">0%</b><small>Completion</small></div></div>
+          <div class="sec-head"><h2>Badges</h2></div>
+          <div class="badges" id="badges"></div>
+        </div>
+        <div>
+          <div class="sec-head first"><h2>Alarms &amp; reminders</h2></div>
+          <div class="card menu">
+            <button class="menu-row" id="m-test"><span class="mi"><svg class="ic"><use href="#i-volume"/></svg></span><span>Test alarm sound</span><svg class="ic chev"><use href="#i-chevr"/></svg></button>
+            <button class="menu-row" id="m-notify"><span class="mi"><svg class="ic"><use href="#i-bell"/></svg></span><span>Enable desktop &amp; phone notifications</span><svg class="ic chev"><use href="#i-chevr"/></svg></button>
+            <label class="menu-row static"><span class="mi"><svg class="ic"><use href="#i-table"/></svg></span><span>Timetable reminders (30 min, 5 min, start)</span><input type="checkbox" id="tt-alerts-on" class="switch" aria-label="Timetable reminders"></label>
+            <div class="menu-row static"><span class="mi"><svg class="ic"><use href="#i-volume"/></svg></span><span>Default alarm sound</span><select id="def-sound" aria-label="Default alarm sound"><option value="classic">Classic</option><option value="digital">Digital beep</option><option value="phone">Phone ringtone</option><option value="rooster">Rooster</option></select></div>
+          </div>
+          <div class="sec-head"><h2>Email &amp; recovery</h2></div>
+          <div class="card email-card">
+            <p class="muted small" id="em-status"></p>
+            <div class="field"><label for="em-input">Email address</label><div class="sound-row"><input id="em-input" type="text" inputmode="email" autocomplete="email" placeholder="you@example.com"><button class="btn primary sm" id="em-save" type="button">Save</button></div></div>
+            <div class="em-actions"><button class="btn sm" id="em-resend" type="button" hidden>Resend confirmation</button><button class="btn sm" id="em-test" type="button"><svg class="ic"><use href="#i-mail"/></svg> Send test email</button></div>
+            <label class="menu-row static"><span class="mi"><svg class="ic"><use href="#i-bell"/></svg></span><span>Email me task &amp; timetable reminders</span><input type="checkbox" id="em-rem" class="switch" aria-label="Email reminders"></label>
+            <label class="menu-row static"><span class="mi"><svg class="ic"><use href="#i-sun"/></svg></span><span>Morning summary email (about 7 am)</span><input type="checkbox" id="em-dig" class="switch" aria-label="Morning summary"></label>
+          </div>
+          <div class="sec-head"><h2>Account</h2></div>
+          <div class="card menu">
+            <button class="menu-row" id="m-pass"><span class="mi"><svg class="ic"><use href="#i-lock"/></svg></span><span>Change password</span><svg class="ic chev"><use href="#i-chevr"/></svg></button>
+            <a class="menu-row" href="{{ url_for('export_csv') }}"><span class="mi"><svg class="ic"><use href="#i-down"/></svg></span><span>Export my tasks (CSV)</span><svg class="ic chev"><use href="#i-chevr"/></svg></a>
+            <a class="menu-row danger" href="{{ url_for('logout') }}"><span class="mi"><svg class="ic"><use href="#i-logout"/></svg></span><span>Sign out</span></a>
+          </div>
+          <p class="muted center small">Do.iT &middot; Digital To-do List</p>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- task editor -->
+<dialog id="editor" aria-labelledby="ed-title">
+  <form id="ed-form" method="dialog" novalidate>
+    <div class="grab" aria-hidden="true"></div>
+    <div class="ed-head"><h2 id="ed-title">New task</h2><button type="button" class="round-btn" data-close aria-label="Close"><svg class="ic"><use href="#i-x"/></svg></button></div>
+    <p class="form-error" id="ed-error" role="alert" hidden></p>
+    <div class="field"><label for="ed-name">What do you need to do?</label><input id="ed-name" type="text" maxlength="255" required placeholder="e.g. Submit project report"></div>
+    <div class="grid2">
+      <div class="field"><label for="ed-date">Due date</label><input id="ed-date" type="date"></div>
+      <div class="field"><label for="ed-time">Time</label><input id="ed-time" type="time"></div>
+    </div>
+    <div class="field"><label for="ed-remind">Alarm</label>
+      <select id="ed-remind"><option value="none">No alarm</option><option value="0">At due time</option><option value="5">5 minutes before</option><option value="10">10 minutes before</option>
+        <option value="30">30 minutes before</option><option value="60">1 hour before</option><option value="1440">1 day before</option><option value="custom">Custom date &amp; time…</option></select>
+      <input id="ed-reminder" type="datetime-local" hidden aria-label="Custom alarm date and time" class="mt">
+      <small class="hint" id="ed-remind-hint"></small></div>
+    <div class="field"><span class="label">Priority</span>
+      <div class="seg" id="ed-prio" role="radiogroup" aria-label="Priority"><button type="button" data-v="low">Low</button><button type="button" data-v="medium">Medium</button><button type="button" data-v="high">High</button></div></div>
+    <div class="field"><label for="ed-notes">Notes</label><textarea id="ed-notes" rows="2" maxlength="2000" placeholder="Anything worth remembering…"></textarea></div>
+    <div class="grid2">
+      <div class="field"><label for="ed-tags">Tags</label><input id="ed-tags" type="text" placeholder="work, school"></div>
+      <div class="field"><label for="ed-repeat">Repeat</label><select id="ed-repeat"><option value="none">Never</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></div>
+    </div>
+    <div class="field"><label for="ed-sound">Alarm sound</label>
+      <div class="sound-row"><select id="ed-sound"><option value="classic">Classic</option><option value="digital">Digital beep</option><option value="phone">Phone ringtone</option><option value="rooster">Rooster</option></select>
+      <button type="button" class="btn sm" id="ed-preview"><svg class="ic"><use href="#i-play"/></svg> Play</button></div></div>
+    <div class="field"><span class="label">Checklist</span><ul class="sub-edit" id="ed-subs"></ul>
+      <button type="button" class="btn sm" id="ed-addsub"><svg class="ic"><use href="#i-plus"/></svg> Add step</button></div>
+    <div class="ed-foot"><button type="button" class="btn danger" id="ed-delete" hidden>Delete</button><span class="grow"></span>
+      <button type="submit" class="btn primary lg" id="ed-save">Save task</button></div>
+  </form>
+</dialog>
+
+<!-- timetable editor -->
+<dialog id="tt-dlg" aria-labelledby="tt-title">
+  <form id="tt-form" method="dialog" novalidate>
+    <div class="grab" aria-hidden="true"></div>
+    <div class="ed-head"><h2 id="tt-title">Add activity</h2><button type="button" class="round-btn" data-close aria-label="Close"><svg class="ic"><use href="#i-x"/></svg></button></div>
+    <p class="form-error" id="tt-error" role="alert" hidden></p>
+    <div class="field"><label for="tt-name">Activity</label><input id="tt-name" type="text" maxlength="120" placeholder="e.g. Mathematics lecture"></div>
+    <div class="field"><span class="label" id="tt-days-l">Day(s)</span><div class="day-pick" id="tt-days" role="group" aria-labelledby="tt-days-l"></div></div>
+    <div class="grid2">
+      <div class="field"><label for="tt-start">Starts</label><input id="tt-start" type="time" required></div>
+      <div class="field"><label for="tt-end">Ends</label><input id="tt-end" type="time" required></div>
+    </div>
+    <div class="field"><label for="tt-loc">Place <span class="opt">(optional)</span></label><input id="tt-loc" type="text" maxlength="120" placeholder="e.g. Hall B"></div>
+    <div class="field"><span class="label" id="tt-col-l">Colour</span><div class="swatches" id="tt-colors" role="radiogroup" aria-labelledby="tt-col-l"></div></div>
+    <label class="check"><input type="checkbox" id="tt-alerts" checked> Remind me 30 min before, 5 min before and at the start time</label>
+    <div class="ed-foot"><button type="button" class="btn danger" id="tt-delete" hidden>Delete</button><span class="grow"></span>
+      <button type="submit" class="btn primary lg" id="tt-save">Save activity</button></div>
+  </form>
+</dialog>
+
+<!-- AI assistant -->
+<dialog id="ai-dlg" aria-labelledby="ai-h" class="ai-dlg">
+  <div class="grab" aria-hidden="true"></div>
+  <div class="ed-head"><h2 id="ai-h"><svg class="ic"><use href="#i-sparkle"/></svg> Do.iT Assistant</h2><button type="button" class="round-btn" data-close aria-label="Close"><svg class="ic"><use href="#i-x"/></svg></button></div>
+  <div class="ai-chips" id="ai-chips"></div>
+  <div class="ai-log" id="ai-log" aria-live="polite"></div>
+  <form class="ai-form" id="ai-form" autocomplete="off">
+    <input id="ai-input" type="text" maxlength="2000" placeholder="Ask me anything about your day…" aria-label="Message the assistant">
+    <button class="mic" type="button" id="ai-mic" aria-label="Speak" title="Speak"><svg class="ic"><use href="#i-mic"/></svg></button>
+    <button class="btn primary" type="submit" id="ai-send" aria-label="Send"><svg class="ic"><use href="#i-send"/></svg></button>
+  </form>
+  <p class="muted small ai-note" id="ai-note"></p>
+</dialog>
+
+<dialog id="pass-dlg" aria-labelledby="pass-h">
+  <form id="pass-form" method="dialog" novalidate>
+    <div class="grab" aria-hidden="true"></div>
+    <div class="ed-head"><h2 id="pass-h">Change password</h2><button type="button" class="round-btn" data-close aria-label="Close"><svg class="ic"><use href="#i-x"/></svg></button></div>
+    <p class="form-error" id="pass-error" role="alert" hidden></p>
+    <div class="field"><label for="p-cur">Current password</label><input id="p-cur" type="password" autocomplete="current-password" required></div>
+    <div class="field"><label for="p-new">New password</label><input id="p-new" type="password" autocomplete="new-password" minlength="8" required><small class="hint">At least 8 characters.</small></div>
+    <div class="ed-foot"><span class="grow"></span><button type="submit" class="btn primary lg">Update password</button></div>
+  </form>
+</dialog>
+
+<div id="heads" aria-live="polite"></div>
+<div id="alarms" aria-live="assertive"></div>
+<div id="toasts" aria-live="polite"></div>
+
+<script id="boot" type="application/json">{{ boot|tojson }}</script>
+<script>window.SOUNDS={classic:"{{ asset('sounds/classic.mp3') }}",digital:"{{ asset('sounds/beep.mp3') }}",phone:"{{ asset('sounds/call_ringtone.mp3') }}",rooster:"{{ asset('sounds/Rooster.wav') }}"};</script>
+<script src="{{ asset('js/app.js') }}" defer></script>
+{% endblock %}

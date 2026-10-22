@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Do.iT – Free Digital To-do List with Reminders, Alarms & Focus Timer{% endblock %}
+{% block body_class %}public{% endblock %}
+{% block head %}
+<script type="application/ld+json">
+{"@context":"https://schema.org","@graph":[
+{"@type":"WebApplication","name":"Do.iT","applicationCategory":"ProductivityApplication","operatingSystem":"Any (web browser)",
+ "description":"Free digital to-do list with reminders, alarms, weekly timetable, diary notes and a focus timer.",
+ "offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"url":"{{ site_url }}/"},
+{"@type":"FAQPage","mainEntity":[
+ {"@type":"Question","name":"Is Do.iT free?","acceptedAnswer":{"@type":"Answer","text":"Yes. Do.iT is free to use. Create an account and start adding tasks."}},
+ {"@type":"Question","name":"Will the alarm ring when a task is due?","acceptedAnswer":{"@type":"Answer","text":"Yes. Set a due time or reminder and Do.iT rings an alarm with sound, vibration and a notification while the app is open."}},
+ {"@type":"Question","name":"Can I use Do.iT on my phone?","acceptedAnswer":{"@type":"Answer","text":"Yes. It works in any modern browser and can be added to your home screen like an app."}}]}]}
+</script>
+{% endblock %}
+{% block content %}
+<header class="pub-nav">
+  <a class="pub-brand" href="{{ url_for('landing') }}"><img src="{{ asset('images/icon-192.png') }}" alt="" width="36" height="36"><span>Do.iT</span></a>
+  <nav aria-label="Main">
+    {% if signed_in %}<a class="btn primary" href="{{ url_for('homepage') }}">Open my tasks</a>
+    {% else %}<a class="btn ghost" href="{{ url_for('login') }}">Sign in</a><a class="btn primary" href="{{ url_for('create_account') }}">Get started</a>{% endif %}
+  </nav>
+</header>
+<main>
+  <section class="hero-pub">
+    <div class="hero-copy">
+      <p class="kicker">Digital to-do list</p>
+      <h1>Plan your day. <span>Never miss a task.</span></h1>
+      <p class="sub">Do.iT is a simple, fast and free to-do app with reminders that really ring, a weekly timetable, a private diary and a focus timer, all in one clean place.</p>
+      <div class="cta-row">
+        <a class="btn primary lg" href="{{ url_for('homepage') if signed_in else url_for('create_account') }}">{{ 'Open my tasks' if signed_in else 'Create free account' }}</a>
+        {% if not signed_in %}<a class="btn ghost lg" href="{{ url_for('login') }}">I have an account</a>{% endif %}
+      </div>
+    </div>
+    <div class="phone" aria-hidden="true">
+      <div class="phone-card"><small>Today's progress</small><b>3 of 5 done</b><div class="bar"><i style="width:60%"></i></div></div>
+      <div class="phone-row"><span class="dot done"></span>Submit assignment<em>9:00 AM</em></div>
+      <div class="phone-row"><span class="dot"></span>Call Jack<em>5:00 PM</em></div>
+      <div class="phone-row"><span class="dot"></span>Gym session<em>7:30 PM</em></div>
+    </div>
+  </section>
+
+  <section class="feat" aria-labelledby="f-title">
+    <h2 id="f-title">Everything you need to get things done</h2>
+    <div class="feat-grid">
+      <article><div class="fi"><svg class="ic"><use href="#i-bell"/></svg></div><h3>Alarms that ring</h3><p>Set a due time and Do.iT rings with sound, vibration and a notification. Snooze or mark done in one tap.</p></article>
+      <article><div class="fi"><svg class="ic"><use href="#i-plus"/></svg></div><h3>Smart quick add</h3><p>Type &ldquo;Call Ada tomorrow 5pm !high #family&rdquo; and the date, time, priority and tag are filled in for you.</p></article>
+      <article><div class="fi"><svg class="ic"><use href="#i-list"/></svg></div><h3>Checklists &amp; notes</h3><p>Break big tasks into steps, add notes and watch the progress bar fill up.</p></article>
+      <article><div class="fi"><svg class="ic"><use href="#i-cal"/></svg></div><h3>Weekly timetable</h3><p>Build your week in a clean table. Get reminders 30 minutes and 5 minutes before each activity, and when it starts.</p></article>
+      <article><div class="fi"><svg class="ic"><use href="#i-timer"/></svg></div><h3>Focus timer</h3><p>Work in focused 25-minute sessions with built-in breaks, linked to your tasks.</p></article>
+      <article><div class="fi"><svg class="ic"><use href="#i-flame"/></svg></div><h3>Private diary</h3><p>Write down your day on ruled pages that save automatically. Add a mood, pin favourites and search later.</p></article>
+    </div>
+  </section>
+
+  <section class="faq" aria-labelledby="q-title">
+    <h2 id="q-title">Frequently asked questions</h2>
+    <details><summary>Is Do.iT free?</summary><p>Yes. Create an account and start adding tasks at no cost.</p></details>
+    <details><summary>Will the alarm ring when a task is due?</summary><p>Yes. While Do.iT is open in your browser, it rings at the reminder time with sound, vibration and a notification. Tasks that came due while the app was closed ring as soon as you open it.</p></details>
+    <details><summary>Can I use it on my phone?</summary><p>Yes. Open Do.iT in your phone browser and choose &ldquo;Add to Home Screen&rdquo; to use it like an app.</p></details>
+  </section>
+</main>
+<footer class="pub-foot"><p>&copy; Do.iT &middot; Digital To-do List &middot; <a href="{{ url_for('login') }}">Sign in</a> &middot; <a href="{{ url_for('create_account') }}">Create account</a></p></footer>
+{% endblock %}

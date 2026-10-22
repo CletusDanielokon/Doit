@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Forgot your login details – Do.iT{% endblock %}
+{% block robots %}noindex{% endblock %}
+{% block body_class %}auth{% endblock %}
+{% block content %}
+<main class="auth-wrap">
+  <a class="auth-back" href="{{ url_for('login') }}" aria-label="Back to sign in"><svg class="ic"><use href="#i-chevl"/></svg></a>
+  <section class="auth-card">
+    <img class="auth-logo" src="{{ asset('images/icon-192.png') }}" alt="Do.iT logo" width="72" height="72">
+    <h1>Forgot your login details?</h1>
+    <p class="muted">Enter the email you signed up with. We will email you your username and a link to choose a new password.</p>
+    {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+    {% if sent %}
+      <p class="form-ok" role="status">If that email belongs to an account, a message is on its way. Check your inbox (and spam folder). The link works for 1 hour.</p>
+      <a class="btn primary block lg" href="{{ url_for('login') }}">Back to sign in</a>
+    {% else %}
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="field"><label for="email">Email address</label><input id="email" name="email" type="text" inputmode="email" autocomplete="email" required autofocus placeholder="you@example.com"></div>
+      <button class="btn primary block lg" type="submit">Send me my details</button>
+    </form>
+    {% endif %}
+  </section>
+</main>
+{% endblock %}

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Sign in – Do.iT{% endblock %}
+{% block description %}Sign in to Do.iT to see your tasks, reminders and alarms.{% endblock %}
+{% block body_class %}auth{% endblock %}
+{% block content %}
+<main class="auth-wrap">
+  <a class="auth-back" href="{{ url_for('landing') }}" aria-label="Back to home"><svg class="ic"><use href="#i-chevl"/></svg></a>
+  <section class="auth-card">
+    <img class="auth-logo" src="{{ asset('images/icon-192.png') }}" alt="Do.iT logo" width="72" height="72">
+    <h1>Welcome back</h1>
+    <p class="muted">Sign in to continue to your tasks.</p>
+    {% if notice %}<p class="form-ok" role="status">{{ notice }}</p>{% endif %}
+    {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+    <form method="post" autocomplete="on">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="field"><label for="username">Username</label>
+        <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" required autofocus placeholder="Enter your username"></div>
+      <div class="field"><label for="password">Password</label>
+        <div class="pw"><input id="password" name="password" type="password" autocomplete="current-password" required placeholder="Enter your password">
+        <button type="button" class="pw-toggle" data-toggle-pw aria-label="Show password">Show</button></div></div>
+      <p class="forgot"><a href="{{ url_for('forgot') }}">Forgot username or password?</a></p>
+      <label class="check"><input type="checkbox" name="remember" checked> Keep me signed in</label>
+      <button class="btn primary block lg" type="submit">Sign in</button>
+    </form>
+    <p class="alt">New to Do.iT? <a href="{{ url_for('create_account') }}">Create an account</a></p>
+  </section>
+</main>
+<script>document.querySelectorAll('[data-toggle-pw]').forEach(function(b){b.addEventListener('click',function(){
+var i=b.previousElementSibling,s=i.type==='password';i.type=s?'text':'password';b.textContent=s?'Hide':'Show';})})</script>
+{% endblock %}

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Page not found – Do.iT{% endblock %}
+{% block robots %}noindex{% endblock %}
+{% block body_class %}auth{% endblock %}
+{% block content %}
+<main class="auth-wrap"><section class="auth-card">
+  <img class="auth-logo" src="{{ asset('images/icon-192.png') }}" alt="Do.iT logo" width="72" height="72">
+  <h1>Page not found</h1><p class="muted">The page you are looking for does not exist.</p>
+  <a class="btn primary block lg" href="{{ url_for('landing') }}">Back to Do.iT</a>
+</section></main>
+{% endblock %}
