@@ -192,6 +192,19 @@ class Note(db.Model):
     updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow)
 
 
+class PendingSignup(db.Model):
+    """A sign-up waiting for its email to be confirmed. The real account is only created after the link is used."""
+    __tablename__ = "pending_signup"
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(254), unique=True, nullable=False, index=True)
+    name = db.Column(db.String(80))
+    username = db.Column(db.String(80), nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    token_hash = db.Column(db.String(64), index=True)
+    created_at = db.Column(db.DateTime, default=utcnow, nullable=False)
+    sent_at = db.Column(db.DateTime, default=utcnow, nullable=False)
+
+
 class EmailLog(db.Model):
     """Remembers which reminder emails were already sent, so nobody is emailed twice."""
     __tablename__ = "email_log"
@@ -591,17 +604,39 @@ def login():
         return redirect(url_for("homepage"))
     error = ""
     if request.method == "POST":
-        username = request.form.get("username", "").strip()
+        identifier = (request.form.get("identifier") or request.form.get("username") or "").strip()
         password = request.form.get("password", "")
-        user = find_user(username) if username else None
-        if user and check_password_hash(user.password, password):
-            session.clear()
-            session["user_id"] = user.id
-            session["username"] = user.username
-            session.permanent = bool(request.form.get("remember"))
-            return redirect(safe_next(request.args.get("next")) or url_for("homepage"))
-        error = "That username and password don't match."
+        if not rate_ok(f"login:{request.remote_addr}:{identifier.lower()}", 10, 900):
+            error = "Too many attempts. Please wait a few minutes and try again."
+        else:
+            user = None
+            if identifier:  # an email address or a username both work
+                user = find_by_email(clean_email(identifier)) if "@" in identifier else find_user(identifier)
+            if user and check_password_hash(user.password, password):
+                session.clear()
+                session["user_id"] = user.id
+                session["username"] = user.username
+                session.permanent = bool(request.form.get("remember"))
+                return redirect(safe_next(request.args.get("next")) or url_for("homepage"))
+            error = "That username/email and password don't match."
     return render_template("index.html", error=error, notice=request.args.get("notice", ""))
+
+
+SIGNUP_LINK_SECONDS = 3600  # the confirmation link works for 1 hour
+
+
+def send_signup_email(pending):
+    """Make a fresh one-hour link for this pending sign-up and email it. Returns '' or an error."""
+    token = secrets.token_urlsafe(32)
+    pending.token_hash = hashlib.sha256(token.encode()).hexdigest()
+    pending.sent_at = utcnow()
+    db.session.commit()
+    link = f"{site_url()}{url_for('confirm_signup', token=token)}"
+    first = (pending.name or pending.username).split(" ")[0]
+    return try_send(pending.email, "Confirm your email to finish creating your Do.iT account", "Confirm your email",
+                    f"Hi {first}, one last step: confirm your email address to create your Do.iT account.",
+                    button=("Confirm and create my account", link),
+                    footer="This link works for 1 hour. If you did not sign up, you can ignore this email and nothing will be created.")
 
 
 @app.route("/create-account", methods=["GET", "POST"])
@@ -616,7 +651,7 @@ def create_account():
         password = request.form.get("password", "")
         email = clean_email(form["email"])
         if not email:
-            error = "Please enter a valid email address. We use it to recover your account."
+            error = "Please enter a valid email address. We use it to confirm your account and recover it."
         elif find_by_email(email):
             error = "An account with that email already exists. Try signing in or resetting your password."
         elif not re.fullmatch(r"[A-Za-z0-9_.-]{3,40}", form["username"]):
@@ -625,18 +660,70 @@ def create_account():
             error = "Please choose a password of at least 8 characters."
         elif find_user(form["username"]):
             error = "That username is already taken. Please choose another."
-        else:
+        elif mailer.mail_enabled():
+            # the account is created only after the emailed link is confirmed
+            if not rate_ok(f"signup:{request.remote_addr}", 10, 3600) or not rate_ok(f"signup-mail:{email}", 3, 3600):
+                error = "Too many sign-up attempts. Please wait a while and try again."
+            else:
+                PendingSignup.query.filter(PendingSignup.created_at < utcnow() - timedelta(hours=24)).delete()
+                pending = PendingSignup.query.filter_by(email=email).first() or PendingSignup(email=email)
+                pending.name, pending.username = form["fullname"] or None, form["username"]
+                pending.password_hash, pending.created_at = generate_password_hash(password), utcnow()
+                db.session.add(pending)
+                db.session.commit()
+                if send_signup_email(pending):
+                    error = "We could not send the confirmation email right now. Please check the address and try again in a few minutes."
+                else:
+                    return render_template("check_email.html", email=email)
+        else:  # email is not set up on this server (for example during local testing): create the account straight away
             user = User(name=form["fullname"] or None, username=form["username"], email=email,
                         password=generate_password_hash(password))
             db.session.add(user)
             db.session.commit()
-            if mailer.mail_enabled():
-                send_verification(user)
             session.clear()
             session["user_id"] = user.id
             session["username"] = user.username
             return redirect(url_for("homepage"))
-    return render_template("create_account.html", error=error, form=form)
+    return render_template("create_account.html", error=error, form=form, confirm_by_email=mailer.mail_enabled())
+
+
+@app.route("/signup/resend", methods=["POST"])
+def resend_signup():
+    email = clean_email(request.form.get("email"))
+    pending = PendingSignup.query.filter_by(email=email).first() if email else None
+    if not rate_ok(f"signup-mail:{email}", 3, 3600):
+        return render_template("check_email.html", email=email, error="Too many emails requested. Please wait a while before asking again."), 429
+    if not pending or pending.created_at < utcnow() - timedelta(hours=24):
+        return render_template("message.html", title="Please sign up again", text="We no longer have your sign-up details. Please fill in the sign-up form again.",
+                               button=("Sign up", url_for("create_account"))), 400
+    err = send_signup_email(pending)
+    return render_template("check_email.html", email=email, resent=not err,
+                           error="We could not send the email right now. Please try again in a few minutes." if err else "")
+
+
+@app.route("/confirm/<token>", methods=["GET", "POST"])
+def confirm_signup(token):
+    pending = PendingSignup.query.filter_by(token_hash=hashlib.sha256(token.encode()).hexdigest()).first()
+    if not pending:
+        return render_template("message.html", title="Link not valid", text="This confirmation link is not valid or was already used. If you already confirmed, just sign in. Otherwise, sign up again.",
+                               button=("Sign in", url_for("login"))), 400
+    if utcnow() - pending.sent_at > timedelta(seconds=SIGNUP_LINK_SECONDS):
+        return render_template("check_email.html", email=pending.email, expired=True), 400
+    if request.method == "GET":  # a button (not the link itself) creates the account, so email scanners cannot use it up
+        return render_template("confirm_signup.html", token=token, name=(pending.name or pending.username).split(" ")[0])
+    if find_user(pending.username) or find_by_email(pending.email):
+        db.session.delete(pending)
+        db.session.commit()
+        return render_template("message.html", title="Already registered", text="That username or email is already in use. Please sign in, or sign up again with different details.",
+                               button=("Sign in", url_for("login"))), 400
+    user = User(name=pending.name, username=pending.username, email=pending.email, password=pending.password_hash, email_verified=True)
+    db.session.add(user)
+    db.session.delete(pending)
+    db.session.commit()
+    session.clear()
+    session["user_id"] = user.id
+    session["username"] = user.username
+    return redirect(url_for("homepage"))
 
 
 @app.route("/logout")
@@ -957,6 +1044,53 @@ def api_resend_verification(user):
     if err:
         raise ValidationError("The email could not be sent. " + err)
     return jsonify(ok=True)
+
+
+@app.route("/api/account/name", methods=["POST"])
+@api_login_required
+def api_set_name(user):
+    name = re.sub(r"\s+", " ", str((request.get_json(silent=True) or {}).get("name", "")).strip())[:80]
+    user.name = name or None
+    db.session.commit()
+    return jsonify(ok=True, name=user.display_name, full_name=name)
+
+
+@app.route("/api/account/delete", methods=["POST"])
+@api_login_required
+def api_delete_account(user):
+    if not rate_ok(f"delete:{user.id}", 5, 900):
+        raise ValidationError("Too many attempts. Please wait a few minutes.")
+    if not check_password_hash(user.password, str((request.get_json(silent=True) or {}).get("password", ""))):
+        raise ValidationError("That password is not correct.")
+    if user.email:
+        PendingSignup.query.filter(db.func.lower(PendingSignup.email) == user.email.lower()).delete(synchronize_session=False)
+    EmailLog.query.filter_by(user_id=user.id).delete()
+    db.session.delete(user)  # tasks, checklists, timetable and diary entries are deleted with it
+    db.session.commit()
+    session.clear()
+    return jsonify(ok=True)
+
+
+@app.route("/export.json")
+def export_json():
+    user = get_user()
+    if not user:
+        return redirect(url_for("login"))
+    data = {"exported_at": utc_iso(utcnow()),
+            "account": {"name": user.name, "username": user.username, "email": user.email},
+            "tasks": [task_json(t) for t in Task.query.filter_by(user_id=user.id).order_by(Task.created_at).all()],
+            "timetable": [tt_json(e) for e in TimetableEntry.query.filter_by(user_id=user.id).order_by(TimetableEntry.day, TimetableEntry.start_min).all()],
+            "diary": [note_json(n) for n in Note.query.filter_by(user_id=user.id).order_by(Note.entry_date).all()]}
+    return Response(json.dumps(data, indent=2, ensure_ascii=False), mimetype="application/json",
+                    headers={"Content-Disposition": "attachment; filename=do-it-my-data.json"})
+
+
+@app.route("/api/ai/status", methods=["POST"])
+@api_login_required
+def api_ai_status(user):
+    if not rate_ok(f"aistatus:{user.id}", 10, 3600):
+        raise ValidationError("Please wait a little before testing again.")
+    return jsonify(ai.diagnose())
 
 
 @app.route("/api/account/prefs", methods=["POST"])

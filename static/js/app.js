@@ -50,6 +50,7 @@ const buzz = (p) => { if (navigator.vibrate && navigator.userActivation && navig
 const closeDlg = (d) => { if (d.open) d.close(); };
 const showErr = (m, id = 'ed-error') => { $(id).textContent = m; $(id).hidden = false; };
 
+let lastError = '';
 async function api(method, url, body) {
   try {
     const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
@@ -58,7 +59,7 @@ async function api(method, url, body) {
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || 'Something went wrong.');
     return data;
-  } catch (err) { toast(err.message || 'Network problem. Please try again.'); return null; }
+  } catch (err) { lastError = err.message || 'Network problem. Please try again.'; toast(lastError); return null; }
 }
 function toast(msg, undo, label) {
   const t = h('div', { class: 'toast', role: 'status' }, msg);
@@ -705,7 +706,7 @@ async function runNoteAI(action) {
   $('nt-ai-title').textContent = { polish: 'Tidied version', summarize: 'Summary', reflect: 'Questions to think about' }[action];
   $('nt-ai-text').textContent = 'Thinking…'; panel.hidden = false; $('nt-ai-replace').hidden = true; $('nt-ai-append').hidden = true;
   const r = await api('POST', '/api/ai/note', { action, text });
-  if (!r) { panel.hidden = true; return; }
+  if (!r) { $('nt-ai-text').textContent = lastError || 'The AI could not answer. Please try again.'; $('nt-ai-replace').hidden = true; $('nt-ai-append').hidden = true; return; }
   $('nt-ai-text').textContent = r.text; $('nt-ai-replace').hidden = action !== 'polish'; $('nt-ai-append').hidden = false; $('nt-ai-replace').dataset.action = action;
 }
 document.querySelectorAll('[data-ai-note]').forEach((b) => b.addEventListener('click', () => runNoteAI(b.dataset.aiNote)));
@@ -731,7 +732,7 @@ async function sendAI(text) {
   if (aiMode === 'goal') {
     aiMode = 'chat'; $('ai-input').placeholder = 'Ask me anything about your day…';
     const r = await api('POST', '/api/ai/breakdown', { goal: text }); typing.remove(); $('ai-send').disabled = false;
-    if (!r) return bubble('bot', 'Sorry, I could not do that right now.');
+    if (!r) return bubble('bot', lastError || 'Sorry, I could not do that right now.');
     const m = bubble('bot', h('b', {}, r.title), h('ol', {}, r.steps.map((x) => h('li', {}, x))),
       h('button', { class: 'btn primary sm', type: 'button', onclick: async (e) => { e.target.disabled = true;
         const t = await api('POST', '/api/tasks', { title: r.title, priority: 'medium', alarm_sound: store.get('defSound', 'classic'), subtasks: r.steps.map((x) => ({ title: x, done: false })) });
@@ -740,7 +741,7 @@ async function sendAI(text) {
   }
   aiHist.push({ role: 'user', content: text });
   const r = await api('POST', '/api/ai/chat', { messages: aiHist, now: ymdhm(new Date()) }); typing.remove(); $('ai-send').disabled = false;
-  if (!r) { aiHist.pop(); return bubble('bot', 'Sorry, I could not answer just now. Please try again.'); }
+  if (!r) { aiHist.pop(); return bubble('bot', lastError || 'Sorry, I could not answer just now. Please try again.'); }
   aiHist.push({ role: 'assistant', content: r.reply }); bubble('bot', r.reply);
 }
 $('ai-form').addEventListener('submit', (e) => { e.preventDefault(); sendAI($('ai-input').value); });
@@ -770,10 +771,29 @@ $('em-dig').addEventListener('change', (e) => { A.email_digest = e.target.checke
 try { const tz = Intl.DateTimeFormat().resolvedOptions().timeZone; if (tz && A.tz !== tz) { A.tz = tz; api('POST', '/api/account/timezone', { tz }); } } catch (e) {}
 paintEmail();
 
+
+/* ---------- profile: name, AI test, delete account ---------- */
+$('nm-input').value = boot.user.full_name || '';
+$('nm-save').addEventListener('click', async () => {
+  const r = await api('POST', '/api/account/name', { name: $('nm-input').value }); if (!r) return;
+  boot.user.name = r.name; boot.user.full_name = r.full_name; render(); toast('Name saved'); });
+$('m-aitest').addEventListener('click', async () => {
+  toast('Testing the AI connection…'); const r = await api('POST', '/api/ai/status');
+  if (r) toast((r.ok ? '✓ ' : '✗ ') + r.message); });
+const dd = $('del-dlg'); dd.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => closeDlg(dd)));
+$('m-delete').addEventListener('click', () => { $('del-error').hidden = true; $('del-pass').value = ''; $('del-ok').checked = false; dd.showModal(); });
+$('del-form').addEventListener('submit', async (e) => { e.preventDefault();
+  if (!$('del-ok').checked) return showErr('Please tick the box to confirm.', 'del-error');
+  if (!$('del-pass').value) return showErr('Enter your password to confirm.', 'del-error');
+  $('del-go').disabled = true; const r = await api('POST', '/api/account/delete', { password: $('del-pass').value }); $('del-go').disabled = false;
+  if (!r) return showErr(lastError || 'Could not delete the account.', 'del-error');
+  location.href = '/login?notice=' + encodeURIComponent('Your account and all its data were deleted.'); });
+dd.addEventListener('click', (e) => { if (e.target === dd) closeDlg(dd); });
+
 /* ---------- boot ---------- */
 [ed, tdlg, pd, aiDlg].forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) closeDlg(d); }));
 document.addEventListener('keydown', (e) => {
-  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName) || ed.open || tdlg.open || pd.open || aiDlg.open || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName) || ed.open || tdlg.open || pd.open || aiDlg.open || dd.open || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === 'n') { e.preventDefault(); $('fab').click(); } if (e.key === '/') { e.preventDefault(); go('tasks').then(() => $('search').focus()); }
 });
 function tick() { checkReminders(); checkTimetable(); focusTick(); }

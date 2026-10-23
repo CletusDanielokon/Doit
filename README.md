@@ -8,7 +8,8 @@ Flask + PostgreSQL (SQLite for quick local tests). Classic navy-and-white interf
 - **Diary**: ruled-paper notes with autosave, mood, pinning, search
 - **Voice typing** in the diary and quick-add (speak, and it types; say “full stop”, “comma”, “new line”)
 - **AI assistant** (plan my day, break a goal into a checklist, tidy/summarise/reflect on diary entries) using Google Gemini (free) or Anthropic Claude
-- **Account recovery**: forgot username/password by email, email confirmation
+- **Accounts**: sign in with username or email; the account is created only after the emailed link is confirmed (valid 1 hour, resend any time); forgot username/password by email; delete account; download all your data
+
 - **Automatic email reminders** for tasks and timetable, plus an optional morning summary
 - **Alarms** that ring (sound, vibration, full-screen alert, notifications), focus timer, streaks and badges
 - **SEO**: landing page, meta tags, Open Graph, JSON-LD, robots.txt, sitemap.xml; installable on phones

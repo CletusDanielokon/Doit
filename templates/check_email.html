@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Check your email – Do.iT{% endblock %}
+{% block robots %}noindex{% endblock %}
+{% block body_class %}auth{% endblock %}
+{% block content %}
+<main class="auth-wrap"><section class="auth-card">
+  <img class="auth-logo" src="{{ asset('images/icon-192.png') }}" alt="Do.iT logo" width="72" height="72">
+  {% if expired %}
+    <h1>That link has expired</h1>
+    <p class="muted">Confirmation links work for 1 hour. No problem: we can send a fresh one to <b>{{ email }}</b>. You do not need to fill in the form again.</p>
+  {% else %}
+    <h1>Check your email</h1>
+    <p class="muted">We sent a confirmation link to <b>{{ email }}</b>. Open it and tap the button to create your account. The link works for <b>1 hour</b>.</p>
+  {% endif %}
+  {% if resent %}<p class="form-ok" role="status">A new link is on its way.</p>{% endif %}
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+  <form method="post" action="{{ url_for('resend_signup') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="email" value="{{ email }}">
+    <button class="btn primary block lg" type="submit">{{ 'Send me a new link' if expired else 'Resend the email' }}</button>
+  </form>
+  <p class="alt">Cannot find it? Check your spam folder. Wrong address? <a href="{{ url_for('create_account') }}">Start again</a></p>
+</section></main>
+{% endblock %}

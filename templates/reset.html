@@ -10,9 +10,12 @@
   {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
   <form method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <div class="field"><label for="password">New password</label><input id="password" name="password" type="password" autocomplete="new-password" required minlength="8" autofocus placeholder="At least 8 characters"></div>
+    <div class="field"><label for="password">New password</label><input id="password" name="password" type="password" autocomplete="new-password" required minlength="8" autofocus placeholder="At least 8 characters"><div class="meter" aria-live="polite"><i></i><span></span></div></div>
     <div class="field"><label for="confirm">Repeat new password</label><input id="confirm" name="confirm" type="password" autocomplete="new-password" required minlength="8"></div>
     <button class="btn primary block lg" type="submit">Save new password</button>
   </form>
 </section></main>
+<script>(function(){var p=document.getElementById('password'),m=document.querySelector('.meter');if(!p||!m)return;
+p.addEventListener('input',function(){var v=p.value,s=0;if(v.length>=8)s++;if(v.length>=12)s++;if(/[A-Z]/.test(v)&&/[a-z]/.test(v))s++;if(/\d/.test(v))s++;if(/[^A-Za-z0-9]/.test(v))s++;
+var l=['Too short','Weak','Fair','Good','Strong','Very strong'][v?Math.min(s,5):0];if(!v)l='';m.dataset.s=v?Math.min(Math.max(s,1),5):0;m.querySelector('span').textContent=l;});})();</script>
 {% endblock %}

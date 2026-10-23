@@ -8,25 +8,29 @@
   <section class="auth-card">
     <img class="auth-logo" src="{{ asset('images/icon-192.png') }}" alt="Do.iT logo" width="72" height="72">
     <h1>Create your account</h1>
-    <p class="muted">It is free and takes less than a minute.</p>
+    <p class="muted">It is free and takes less than a minute.{% if confirm_by_email %} We will email you a link to confirm your address, and your account is created when you use it.{% endif %}</p>
     {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
     <form method="post">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="field"><label for="fullname">Full name <span class="opt">(optional)</span></label>
-        <input id="fullname" name="fullname" type="text" autocomplete="name" value="{{ form.get('fullname','') }}" placeholder="e.g. John Doe"></div>
+        <input id="fullname" name="fullname" type="text" autocomplete="name" value="{{ form.get('fullname','') }}" placeholder="e.g. Cletus Okafor"></div>
       <div class="field"><label for="email">Email address</label>
         <input id="email" name="email" type="text" inputmode="email" autocomplete="email" required value="{{ form.get('email','') }}" placeholder="you@example.com">
-        <small class="hint">Used to recover your username or password, and for task reminders.</small></div>
+        <small class="hint">Used to confirm your account, recover your login and send reminders.</small></div>
       <div class="field"><label for="username">Username</label>
         <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" required minlength="3" maxlength="40" value="{{ form.get('username','') }}" placeholder="Choose a username"></div>
       <div class="field"><label for="password">Password</label>
         <div class="pw"><input id="password" name="password" type="password" autocomplete="new-password" required minlength="8" placeholder="At least 8 characters">
-        <button type="button" class="pw-toggle" data-toggle-pw aria-label="Show password">Show</button></div></div>
-      <button class="btn primary block lg" type="submit">Create account</button>
+        <button type="button" class="pw-toggle" data-toggle-pw aria-label="Show password">Show</button></div>
+        <div class="meter" aria-live="polite"><i></i><span></span></div></div>
+      <button class="btn primary block lg" type="submit">{% if confirm_by_email %}Create account and email me the link{% else %}Create account{% endif %}</button>
     </form>
     <p class="alt">Already have an account? <a href="{{ url_for('login') }}">Sign in</a></p>
   </section>
 </main>
 <script>document.querySelectorAll('[data-toggle-pw]').forEach(function(b){b.addEventListener('click',function(){
 var i=b.previousElementSibling,s=i.type==='password';i.type=s?'text':'password';b.textContent=s?'Hide':'Show';})})</script>
+<script>(function(){var p=document.getElementById('password'),m=document.querySelector('.meter');if(!p||!m)return;
+p.addEventListener('input',function(){var v=p.value,s=0;if(v.length>=8)s++;if(v.length>=12)s++;if(/[A-Z]/.test(v)&&/[a-z]/.test(v))s++;if(/\d/.test(v))s++;if(/[^A-Za-z0-9]/.test(v))s++;
+var l=['Too short','Weak','Fair','Good','Strong','Very strong'][v?Math.min(s,5):0];m.dataset.s=v?Math.min(Math.max(s,1),5):0;m.querySelector('span').textContent=v?l:'';});})();</script>
 {% endblock %}

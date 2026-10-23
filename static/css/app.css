@@ -39,9 +39,9 @@ textarea{resize:vertical}.hint{display:block;color:var(--muted);font-size:.8rem;
 body.auth{min-height:100vh;display:grid;background:linear-gradient(180deg,var(--navy) 0,var(--navy) 36%,var(--bg) 36.1%)}
 .auth-wrap{display:grid;place-items:center;padding:1rem;position:relative}
 .auth-back{position:absolute;top:1rem;left:1rem;color:#fff;width:2.6rem;height:2.6rem;display:grid;place-items:center;border-radius:50%;background:rgba(255,255,255,.15)}
-.auth-card{width:100%;max-width:26rem;background:#fff;border-radius:14px;padding:2rem 1.7rem 1.6rem;box-shadow:0 24px 60px -20px rgba(3,19,56,.6);outline:1px solid var(--blue-m);outline-offset:-8px;margin-top:2.5rem}
+.auth-card{width:100%;max-width:26rem;background:#fff;border-radius:14px;padding:2rem 1.7rem 1.6rem;box-shadow:0 24px 60px -20px rgba(3,19,56,.6);outline:1px solid var(--blue-m);outline-offset:-8px}
 .auth-card h1{font-size:1.75rem;text-align:center}.auth-card .muted{text-align:center;margin:.3rem 0 1rem}
-.auth-logo{display:block;margin:-3.5rem auto .8rem;border-radius:50%;border:4px solid #fff;box-shadow:0 8px 24px rgba(7,65,220,.35);position:relative;z-index:1}
+.auth-logo{display:block;margin:-3.5rem auto .8rem;border-radius:50%;border:4px solid #fff;box-shadow:0 8px 24px rgba(7,65,220,.35)}
 .alt{text-align:center;color:var(--muted);margin:1.2rem 0 0;font-size:.95rem}.alt a{font-weight:700;text-decoration:none}
 .pw{position:relative}.pw input{padding-right:4.4rem}.pw-toggle{position:absolute;right:.5rem;top:50%;transform:translateY(-50%);border:0;background:none;color:var(--blue);font-weight:700;cursor:pointer;padding:.5rem}
 
@@ -319,3 +319,10 @@ dialog::backdrop{background:rgba(6,19,56,.6);backdrop-filter:blur(3px)}
 @media (max-width:40rem){.ai-dlg{height:90dvh}}
 .ai-dlg .ed-head,.ai-chips,.ai-form,.ai-note{flex:none}
 .msg{flex:none}
+.meter{display:flex;align-items:center;gap:.6rem;margin-top:.45rem;min-height:1rem}.meter i{flex:1;height:6px;border-radius:9px;background:var(--line);position:relative;overflow:hidden}
+.meter i::after{content:"";position:absolute;inset:0 auto 0 0;width:0;background:var(--red);transition:.25s}.meter span{font-size:.8rem;color:var(--muted);min-width:5.5rem;text-align:right}
+.meter[data-s="1"] i::after{width:20%}.meter[data-s="2"] i::after{width:40%;background:#d4a017}.meter[data-s="3"] i::after{width:60%;background:#d4a017}.meter[data-s="4"] i::after{width:80%;background:var(--green)}.meter[data-s="5"] i::after{width:100%;background:var(--green)}
+
+/* ---------- invisible scrollbars (scrolling still works with wheel, touch and keys) ---------- */
+html,body,*{scrollbar-width:none;-ms-overflow-style:none}
+html::-webkit-scrollbar,body::-webkit-scrollbar,*::-webkit-scrollbar{display:none;width:0;height:0;background:transparent}

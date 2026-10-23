@@ -13,8 +13,8 @@
     {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
     <form method="post" autocomplete="on">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="field"><label for="username">Username</label>
-        <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" required autofocus placeholder="Enter your username"></div>
+      <div class="field"><label for="identifier">Username or email</label>
+        <input id="identifier" name="identifier" type="text" autocomplete="username" autocapitalize="none" required autofocus placeholder="Your username or email address"></div>
       <div class="field"><label for="password">Password</label>
         <div class="pw"><input id="password" name="password" type="password" autocomplete="current-password" required placeholder="Enter your password">
         <button type="button" class="pw-toggle" data-toggle-pw aria-label="Show password">Show</button></div></div>

@@ -50,7 +50,7 @@
           <div class="o3">
             <form class="quick" id="quick" autocomplete="off">
               <svg class="ic"><use href="#i-plus"/></svg>
-              <input id="quick-input" type="text" maxlength="255" placeholder="Quick add: Call Frank tomorrow 5pm !high #family" aria-label="Quick add a task">
+              <input id="quick-input" type="text" maxlength="255" placeholder="Quick add: Call Ada tomorrow 5pm !high #family" aria-label="Quick add a task">
               <button class="mic" type="button" id="quick-mic" aria-label="Speak your task" title="Speak your task"><svg class="ic"><use href="#i-mic"/></svg></button>
               <button class="btn primary sm" type="submit">Add</button>
             </form>
@@ -178,6 +178,7 @@
         <div>
           <div class="sec-head first"><h2>Alarms &amp; reminders</h2></div>
           <div class="card menu">
+            <button class="menu-row" id="m-aitest"><span class="mi"><svg class="ic"><use href="#i-sparkle"/></svg></span><span>Test the AI connection</span><svg class="ic chev"><use href="#i-chevr"/></svg></button>
             <button class="menu-row" id="m-test"><span class="mi"><svg class="ic"><use href="#i-volume"/></svg></span><span>Test alarm sound</span><svg class="ic chev"><use href="#i-chevr"/></svg></button>
             <button class="menu-row" id="m-notify"><span class="mi"><svg class="ic"><use href="#i-bell"/></svg></span><span>Enable desktop &amp; phone notifications</span><svg class="ic chev"><use href="#i-chevr"/></svg></button>
             <label class="menu-row static"><span class="mi"><svg class="ic"><use href="#i-table"/></svg></span><span>Timetable reminders (30 min, 5 min, start)</span><input type="checkbox" id="tt-alerts-on" class="switch" aria-label="Timetable reminders"></label>
@@ -185,6 +186,7 @@
           </div>
           <div class="sec-head"><h2>Email &amp; recovery</h2></div>
           <div class="card email-card">
+            <div class="field"><label for="nm-input">Your name</label><div class="sound-row"><input id="nm-input" type="text" maxlength="80" autocomplete="name" placeholder="Your full name"><button class="btn primary sm" id="nm-save" type="button">Save</button></div></div>
             <p class="muted small" id="em-status"></p>
             <div class="field"><label for="em-input">Email address</label><div class="sound-row"><input id="em-input" type="text" inputmode="email" autocomplete="email" placeholder="you@example.com"><button class="btn primary sm" id="em-save" type="button">Save</button></div></div>
             <div class="em-actions"><button class="btn sm" id="em-resend" type="button" hidden>Resend confirmation</button><button class="btn sm" id="em-test" type="button"><svg class="ic"><use href="#i-mail"/></svg> Send test email</button></div>
@@ -195,6 +197,8 @@
           <div class="card menu">
             <button class="menu-row" id="m-pass"><span class="mi"><svg class="ic"><use href="#i-lock"/></svg></span><span>Change password</span><svg class="ic chev"><use href="#i-chevr"/></svg></button>
             <a class="menu-row" href="{{ url_for('export_csv') }}"><span class="mi"><svg class="ic"><use href="#i-down"/></svg></span><span>Export my tasks (CSV)</span><svg class="ic chev"><use href="#i-chevr"/></svg></a>
+            <a class="menu-row" href="{{ url_for('export_json') }}"><span class="mi"><svg class="ic"><use href="#i-down"/></svg></span><span>Download all my data (JSON)</span><svg class="ic chev"><use href="#i-chevr"/></svg></a>
+            <button class="menu-row danger" id="m-delete"><span class="mi"><svg class="ic"><use href="#i-trash"/></svg></span><span>Delete my account</span><svg class="ic chev"><use href="#i-chevr"/></svg></button>
             <a class="menu-row danger" href="{{ url_for('logout') }}"><span class="mi"><svg class="ic"><use href="#i-logout"/></svg></span><span>Sign out</span></a>
           </div>
           <p class="muted center small">Do.iT &middot; Digital To-do List</p>
@@ -269,6 +273,18 @@
     <button class="btn primary" type="submit" id="ai-send" aria-label="Send"><svg class="ic"><use href="#i-send"/></svg></button>
   </form>
   <p class="muted small ai-note" id="ai-note"></p>
+</dialog>
+
+<dialog id="del-dlg" aria-labelledby="del-h">
+  <form id="del-form" method="dialog" novalidate>
+    <div class="grab" aria-hidden="true"></div>
+    <div class="ed-head"><h2 id="del-h">Delete your account?</h2><button type="button" class="round-btn" data-close aria-label="Close"><svg class="ic"><use href="#i-x"/></svg></button></div>
+    <p class="form-error" id="del-error" role="alert" hidden></p>
+    <p>This permanently deletes your account and <b>everything in it</b>: tasks, timetable, diary entries and settings. It cannot be undone. You can download your data first from Profile.</p>
+    <div class="field"><label for="del-pass">Type your password to confirm</label><input id="del-pass" type="password" autocomplete="current-password" required></div>
+    <label class="check"><input type="checkbox" id="del-ok"> I understand this cannot be undone</label>
+    <div class="ed-foot"><span class="grow"></span><button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn danger lg" id="del-go">Delete everything</button></div>
+  </form>
 </dialog>
 
 <dialog id="pass-dlg" aria-labelledby="pass-h">
