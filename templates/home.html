@@ -152,6 +152,8 @@
             <button type="button" class="btn sm ai-btn" data-ai-note="polish" title="Fix punctuation and grammar"><svg class="ic"><use href="#i-sparkle"/></svg> Tidy up</button>
             <button type="button" class="btn sm ai-btn" data-ai-note="summarize"><svg class="ic"><use href="#i-sparkle"/></svg> Summarize</button>
             <button type="button" class="btn sm ai-btn" data-ai-note="reflect"><svg class="ic"><use href="#i-sparkle"/></svg> Reflect</button>
+            <button type="button" class="btn sm ai-btn" data-ai-note="week" title="Review the last 7 days of your diary"><svg class="ic"><use href="#i-sparkle"/></svg> Weekly review</button>
+            <label class="mini-check" title="After you stop speaking, the AI fixes punctuation and repeated words"><input type="checkbox" id="nt-auto"> Auto-tidy my speech</label>
           </div>
           <p class="muted small nt-hint" id="nt-hint" hidden>Listening… say “full stop”, “comma”, “new line” or “new paragraph” to format as you speak.</p>
           <input id="nt-title" class="nt-title" type="text" maxlength="150" placeholder="Title (optional)" aria-label="Entry title">
@@ -197,6 +199,7 @@
           <div class="card menu">
             <button class="menu-row" id="m-pass"><span class="mi"><svg class="ic"><use href="#i-lock"/></svg></span><span>Change password</span><svg class="ic chev"><use href="#i-chevr"/></svg></button>
             <a class="menu-row" href="{{ url_for('export_csv') }}"><span class="mi"><svg class="ic"><use href="#i-down"/></svg></span><span>Export my tasks (CSV)</span><svg class="ic chev"><use href="#i-chevr"/></svg></a>
+            <button class="menu-row" id="m-install" hidden><span class="mi"><svg class="ic"><use href="#i-down"/></svg></span><span>Install Do.iT on this device</span><svg class="ic chev"><use href="#i-chevr"/></svg></button>
             <a class="menu-row" href="{{ url_for('export_json') }}"><span class="mi"><svg class="ic"><use href="#i-down"/></svg></span><span>Download all my data (JSON)</span><svg class="ic chev"><use href="#i-chevr"/></svg></a>
             <button class="menu-row danger" id="m-delete"><span class="mi"><svg class="ic"><use href="#i-trash"/></svg></span><span>Delete my account</span><svg class="ic chev"><use href="#i-chevr"/></svg></button>
             <a class="menu-row danger" href="{{ url_for('logout') }}"><span class="mi"><svg class="ic"><use href="#i-logout"/></svg></span><span>Sign out</span></a>

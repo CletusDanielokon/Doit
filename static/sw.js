@@ -8,3 +8,6 @@ self.addEventListener('notificationclick', (event) => {
     return self.clients.openWindow('/app');
   }));
 });
+
+// Needed so browsers offer "Install app" (we do not cache anything).
+self.addEventListener('fetch', () => {});

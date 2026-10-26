@@ -430,6 +430,8 @@ $('tt-form').addEventListener('submit', async (ev) => {
   if (!title) return showErr('Please give the activity a name.', 'tt-error'); if (!days.length) return showErr('Choose at least one day.', 'tt-error');
   if (!start || !end) return showErr('Please set the start and end times.', 'tt-error'); if (end <= start) return showErr('The end time must be after the start time.', 'tt-error');
   const color = (document.querySelector('#tt-colors input:checked') || {}).value || 'blue';
+  const clash = S.tt.filter((x) => x.id !== S.ttEditing && days.includes(x.day) && x.start < hmToMin(end) && hmToMin(start) < x.end);
+  if (clash.length && !confirm(`This overlaps with “${clash[0].title}” (${DN[clash[0].day]} ${fmtMin(clash[0].start)}–${fmtMin(clash[0].end)}). Save anyway?`)) return;
   const body = { title, start, end, location: $('tt-loc').value, color, alerts: $('tt-alerts').checked }, btn = $('tt-save'); btn.disabled = true;
   let r;
   if (S.ttEditing) { r = await api('PATCH', `/api/timetable/${S.ttEditing}`, { ...body, day: days[0] }); if (r) S.tt = S.tt.map((x) => (x.id === r.entry.id ? r.entry : x)); }
@@ -661,37 +663,69 @@ function formatSpeech(t, before) {
   s = s.replace(/([.!?]\s+|\n)([a-z])/g, (m, a, b) => a + b.toUpperCase());
   return (before && !/\s$/.test(before) && !/^[.,!?\n]/.test(s) ? ' ' : '') + s;
 }
+const hmToMin = (t) => +t.slice(0, 2) * 60 + +t.slice(3, 5);
+/* Browsers sometimes report the same phrase twice (or a growing copy of it). Keep only one. */
+function joinFinals(parts) {
+  const out = [];
+  for (let p of parts) { p = p.trim(); if (!p) continue; const last = out.length ? out[out.length - 1] : null, x = p.toLowerCase(), y = last ? last.toLowerCase() : '';
+    if (last && x.startsWith(y)) out[out.length - 1] = p;         // the same phrase, now longer: keep the longer one
+    else if (last && (y.endsWith(x) || y === x)) continue;          // an exact repeat: skip it
+    else out.push(p); }
+  return out.join(' ');
+}
 function makeDictation({ input, button, getLang, onText, onState, once, onDone }) {
-  let rec = null, on = false, base = '', after = '', fin = '';
+  let rec = null, on = false, gen = 0, base = '', after = '', committed = '', finals = [], interim = '', lastCommit = '', lastCommitAt = 0, lastHeard = 0;
   const paint = (v) => { button.classList.toggle('on', v); button.setAttribute('aria-pressed', v); if (onState) onState(v); };
-  function stop() {
-    if (!on) return; on = false; try { rec.onend = null; rec.stop(); } catch (e) {}
-    input.value = base + fin + after; const pos = (base + fin).length; try { input.setSelectionRange(pos, pos); } catch (e) {}
-    paint(false); onText && onText(); if (onDone && fin.trim()) onDone(fin.trim());
+  const norm = (t) => t.trim().toLowerCase().replace(/[.,!?]/g, '').replace(/\s+/g, ' ');
+  const isRepeat = (t) => { const n = norm(t); return n.length >= 3 && Date.now() - lastCommitAt < 4000 && norm(committed).endsWith(n); };   // the browser said it again after a restart
+  const session = () => { const t = formatSpeech(joinFinals(finals), base + committed); return isRepeat(t) ? '' : t; };
+  function render() {   // the text box is always rebuilt from scratch, so nothing can be added twice
+    const before = base + committed + session(), shown = interim.trim() ? (before && !/\s$/.test(before) ? ' ' : '') + interim.trim() : '';
+    input.value = before + shown + after; onText && onText(); }
+  function commit() {
+    const sess = session(); finals = []; if (!sess.trim()) return;
+    committed += sess; lastCommit = sess.trim().toLowerCase(); lastCommitAt = Date.now(); }
+  function stop(flush = true) {
+    if (!on) return; on = false; gen++; try { rec.abort(); } catch (e) {}   // anything the old recognizer still says is ignored
+    if (flush && interim.trim()) finals.push(interim); interim = ''; commit();
+    input.value = base + committed + after; const pos = (base + committed).length; try { input.setSelectionRange(pos, pos); } catch (e) {}
+    paint(false); onText && onText();
+    if (onDone && committed.trim()) onDone({ text: committed, start: base.length, end: pos });
   }
+  function begin() {
+    const g = ++gen; rec = new SR(); rec.lang = getLang(); rec.continuous = !once; rec.interimResults = true;
+    rec.onresult = (e) => { if (g !== gen) return; lastHeard = Date.now(); const fin = []; let itm = '';
+      for (let i = 0; i < e.results.length; i++) { const r = e.results[i]; if (r.isFinal) fin.push(r[0].transcript); else itm += r[0].transcript; }
+      finals = fin; interim = itm; render(); if (once && fin.length) setTimeout(() => stop(false), 0); };
+    rec.onerror = (e) => { if (g !== gen) return;
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { toast('Microphone is blocked. Allow it in your browser (lock icon near the address bar), then try again.'); stop(false); }
+      else if (e.error === 'network') { toast('Voice typing needs an internet connection.'); stop(false); }
+      else if (e.error === 'audio-capture') { toast('No microphone was found.'); stop(false); } };
+    rec.onend = () => { if (g !== gen || !on) return; interim = ''; commit(); render();
+      if (Date.now() - lastHeard > 60000) { toast('Stopped listening because it was quiet.'); return stop(false); }
+      setTimeout(() => { if (on && g === gen) begin(); }, 250); };
+    try { rec.start(); } catch (e) { on = false; gen++; paint(false); toast('Could not start the microphone.'); } }
   function start() {
-    if (!SR) return toast('Voice typing works in Chrome, Edge and Safari.');
-    armAudio(); const a = input.selectionStart ?? input.value.length, b = input.selectionEnd ?? a;
-    base = input.value.slice(0, a); after = input.value.slice(b); fin = '';
-    rec = new SR(); rec.lang = getLang(); rec.continuous = !once; rec.interimResults = true;
-    rec.onresult = (e) => {
-      let interim = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) { const r = e.results[i];
-        if (r.isFinal) { fin += formatSpeech(r[0].transcript, base + fin); if (once) setTimeout(stop, 0); } else interim += r[0].transcript; }
-      input.value = base + fin + (interim ? (fin && !/\s$/.test(fin) ? ' ' : '') + interim : '') + after; onText && onText(); };
-    rec.onerror = (e) => {
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { toast('Microphone is blocked. Allow it in your browser (lock icon near the address bar), then try again.'); stop(); }
-      else if (e.error === 'network') { toast('Voice typing needs an internet connection.'); stop(); }
-      else if (e.error === 'audio-capture') { toast('No microphone was found.'); stop(); } };
-    rec.onend = () => { if (on) { try { rec.start(); } catch (e) { stop(); } } };
-    on = true; try { rec.start(); paint(true); } catch (e) { on = false; toast('Could not start the microphone.'); } }
+    if (!SR) return toast('Voice typing works in Chrome, Edge and Safari.'); if (on) return; armAudio();
+    const a = input.selectionStart ?? input.value.length, b = input.selectionEnd ?? a;
+    base = input.value.slice(0, a); after = input.value.slice(b); committed = ''; finals = []; interim = ''; lastCommit = ''; lastHeard = Date.now();
+    on = true; paint(true); begin(); }
   return { toggle: () => (on ? stop() : start()), stop, get active() { return on; } };
 }
 document.querySelectorAll('.mic, .mic-btn').forEach((b) => { b.hidden = !SR; });
 $('nt-lang').value = store.get('speechLang', 'en-NG'); $('nt-lang').addEventListener('change', (e) => store.set('speechLang', e.target.value));
 const dNote = makeDictation({ input: $('nt-body'), button: $('nt-mic'), getLang: () => $('nt-lang').value, onText: () => { countWords(); queueSave(); },
   onState: (v) => { $('nt-hint').hidden = !v; $('nt-mic').lastElementChild.textContent = v ? 'Stop' : 'Speak'; },
-  onDone: (t) => { if (A.ai_enabled && t.split(/\s+/).length >= 8) toast('Finished speaking?', () => runNoteAI('polish'), 'Tidy up with AI'); } });
+  onDone: (d) => { if (!A.ai_enabled || d.text.split(/\s+/).length < 5) return; if ($('nt-auto').checked) autoTidy(d);
+    else if (d.text.split(/\s+/).length >= 8) toast('Finished speaking?', () => runNoteAI('polish'), 'Tidy up with AI'); } });
+$('nt-auto').checked = store.get('autoTidy', A.ai_enabled ? 'on' : 'off') === 'on' && !!A.ai_enabled; $('nt-auto').disabled = !A.ai_enabled;
+$('nt-auto').addEventListener('change', (e) => store.set('autoTidy', e.target.checked ? 'on' : 'off'));
+async function autoTidy(d) {   // speak, then the AI cleans up only the part you just dictated
+  const body = $('nt-body'), original = body.value; if (body.value.slice(d.start, d.end) !== d.text) return;
+  $('nt-status').textContent = 'Tidying with AI…'; const r = await api('POST', '/api/ai/note', { action: 'polish', text: d.text.trim() }); if (!r) { $('nt-status').textContent = 'Saved'; return; }
+  if (body.value.slice(d.start, d.end) !== d.text) return;   // you kept typing meanwhile: leave it alone
+  body.value = body.value.slice(0, d.start) + d.text.match(/^\s*/)[0] + r.text + body.value.slice(d.end); countWords(); queueSave();
+  toast('Tidied with AI', () => { body.value = original; countWords(); queueSave(); }, 'Undo'); }
 $('nt-mic').addEventListener('click', () => { if (S.noteId === null) newNote().then(() => dNote.toggle()); else dNote.toggle(); });
 const dQuick = makeDictation({ input: $('quick-input'), button: $('quick-mic'), getLang: () => $('nt-lang').value, once: true, onText: () => $('quick-input').dispatchEvent(new Event('input')) });
 $('quick-mic').addEventListener('click', () => dQuick.toggle());
@@ -701,11 +735,11 @@ let aiNoteRange = null;
 async function runNoteAI(action) {
   if (!A.ai_enabled) return toast('AI is not set up on this server yet.');
   const body = $('nt-body'), sel = body.value.slice(body.selectionStart, body.selectionEnd).trim(), text = sel || body.value.trim();
-  if (!text) return toast('Write or speak something first.');
+  if (action !== 'week' && !text) return toast('Write or speak something first.');
   aiNoteRange = sel ? [body.selectionStart, body.selectionEnd] : null; const panel = $('nt-ai');
-  $('nt-ai-title').textContent = { polish: 'Tidied version', summarize: 'Summary', reflect: 'Questions to think about' }[action];
+  $('nt-ai-title').textContent = { polish: 'Tidied version', summarize: 'Summary', reflect: 'Questions to think about', week: 'Your week in review' }[action];
   $('nt-ai-text').textContent = 'Thinking…'; panel.hidden = false; $('nt-ai-replace').hidden = true; $('nt-ai-append').hidden = true;
-  const r = await api('POST', '/api/ai/note', { action, text });
+  const r = await api('POST', '/api/ai/note', { action, text, now: ymdhm(new Date()) });
   if (!r) { $('nt-ai-text').textContent = lastError || 'The AI could not answer. Please try again.'; $('nt-ai-replace').hidden = true; $('nt-ai-append').hidden = true; return; }
   $('nt-ai-text').textContent = r.text; $('nt-ai-replace').hidden = action !== 'polish'; $('nt-ai-append').hidden = false; $('nt-ai-replace').dataset.action = action;
 }
@@ -723,9 +757,25 @@ function openAI() {
   if (!$('ai-log').children.length) bubble('bot', `Hi ${boot.user.name}! I can plan your day, break a big goal into steps, or help you fit study time into your timetable. What would you like?`);
   $('ai-input').focus();
 }
-const AI_CHIPS = [['Plan my day', 'What should I do first today? Give me a simple plan for the rest of my day.'], ['Break down a goal', null],
-  ['Study time', 'Look at my timetable and tasks and suggest when I can study this week.'], ['Motivate me', 'Give me a short, encouraging message to help me start my next task.']];
+const AI_CHIPS = [['Plan my day', 'Plan the rest of my day hour by hour, using my timetable and tasks.'], ['Plan my week', 'Look at my timetable and tasks and help me plan my week. Suggest when to do each pending task.'],
+  ['Overdue rescue', 'I have overdue or late tasks. Tell me what to do first and propose new realistic dates.'], ['Break down a goal', null],
+  ['Study time', 'Find free time in my timetable this week and propose study blocks I can add.'], ['Motivate me', 'Give me a short, encouraging message to help me start my next task.']];
 $('ai-chips').replaceChildren(...AI_CHIPS.map(([l, q]) => h('button', { type: 'button', onclick: () => { if (q) sendAI(q); else { aiMode = 'goal'; $('ai-input').placeholder = 'Describe your goal, e.g. “Prepare for my chemistry exam”'; $('ai-input').focus(); bubble('bot', 'Tell me the goal and I will turn it into a checklist.'); } } }, l)));
+function actionLabel(a) {
+  if (a.type === 'add_task') return `Task: ${a.title}` + (a.due ? ' · ' + fmtDay(parseLocal(a.due)) + (a.time ? ' ' + fmtMin(hmToMin(a.time)) : '') : '');
+  return `${a.title} · ${a.days.map((d) => DN[d]).join(', ')} · ${fmtMin(hmToMin(a.start))}–${fmtMin(hmToMin(a.end))}`;
+}
+async function applyAction(a) {
+  if (a.type === 'add_task') {
+    const r = await api('POST', '/api/tasks', { title: a.title, priority: a.priority, tags: a.tags, due: a.due, due_time: a.time, reminder: a.due && a.time ? `${a.due}T${a.time}` : '',
+      alarm_sound: store.get('defSound', 'classic'), recurring: 'none' });
+    if (r) { put(r.task); render(); return true; } return false; }
+  const r = await api('POST', '/api/timetable', { title: a.title, days: a.days, start: a.start, end: a.end, color: 'blue', alerts: true });
+  if (r) { S.tt.push(...r.entries); render(); return true; } return false;
+}
+const actionCard = (a) => h('div', { class: 'act-card' }, h('span', {}, actionLabel(a)),
+  h('button', { class: 'btn primary sm', type: 'button', onclick: async (e) => { const b = e.currentTarget; b.disabled = true; if (await applyAction(a)) b.textContent = 'Added ✓'; else b.disabled = false; } },
+    a.type === 'add_task' ? 'Add task' : 'Add to timetable'));
 async function sendAI(text) {
   text = (text || '').trim(); if (!text) return; if (!A.ai_enabled) return toast('AI is not set up on this server yet.');
   bubble('user', text); $('ai-input').value = ''; const typing = bubble('bot typing', 'Thinking…'); $('ai-send').disabled = true;
@@ -742,10 +792,14 @@ async function sendAI(text) {
   aiHist.push({ role: 'user', content: text });
   const r = await api('POST', '/api/ai/chat', { messages: aiHist, now: ymdhm(new Date()) }); typing.remove(); $('ai-send').disabled = false;
   if (!r) { aiHist.pop(); return bubble('bot', lastError || 'Sorry, I could not answer just now. Please try again.'); }
-  aiHist.push({ role: 'assistant', content: r.reply }); bubble('bot', r.reply);
+  aiHist.push({ role: 'assistant', content: r.reply }); const m = bubble('bot', r.reply);
+  const acts = r.actions || []; if (acts.length) { const box = h('div', { class: 'act-list' }, acts.map(actionCard));
+    if (acts.length > 1) box.append(h('button', { class: 'btn sm', type: 'button', onclick: async (e) => { e.target.disabled = true; for (const a of acts) await applyAction(a); e.target.textContent = 'All added ✓';
+      box.querySelectorAll('.act-card .btn').forEach((x) => { x.disabled = true; x.textContent = 'Added ✓'; }); } }, 'Add all'));
+    m.append(box); $('ai-log').scrollTop = 1e9; }
 }
 $('ai-form').addEventListener('submit', (e) => { e.preventDefault(); sendAI($('ai-input').value); });
-const dAI = makeDictation({ input: $('ai-input'), button: $('ai-mic'), getLang: () => $('nt-lang').value, once: true, onDone: (t) => sendAI(t) });
+const dAI = makeDictation({ input: $('ai-input'), button: $('ai-mic'), getLang: () => $('nt-lang').value, once: true, onDone: (d) => sendAI(d.text) });
 $('ai-mic').addEventListener('click', () => dAI.toggle());
 aiDlg.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => { dAI.stop(); closeDlg(aiDlg); }));
 aiDlg.addEventListener('close', () => dAI.stop());
@@ -789,6 +843,12 @@ $('del-form').addEventListener('submit', async (e) => { e.preventDefault();
   if (!r) return showErr(lastError || 'Could not delete the account.', 'del-error');
   location.href = '/login?notice=' + encodeURIComponent('Your account and all its data were deleted.'); });
 dd.addEventListener('click', (e) => { if (e.target === dd) closeDlg(dd); });
+
+/* ---------- install as an app ---------- */
+let installEvt = null;
+addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; $('m-install').hidden = false; });
+$('m-install').addEventListener('click', async () => { if (!installEvt) return; installEvt.prompt(); await installEvt.userChoice; installEvt = null; $('m-install').hidden = true; });
+addEventListener('appinstalled', () => { $('m-install').hidden = true; toast('Do.iT was installed'); });
 
 /* ---------- boot ---------- */
 [ed, tdlg, pd, aiDlg].forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) closeDlg(d); }));

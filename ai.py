@@ -70,11 +70,14 @@ def _explain(status, payload):
 
 
 # ---------------------------------------------------------------- Gemini
-def _gemini_body(system, messages, max_tokens):
-    return {"systemInstruction": {"parts": [{"text": system}]},
+def _gemini_body(system, messages, max_tokens, json_mode=False):
+    body = {"systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]} for m in messages],
             # newer models spend part of this budget "thinking", so keep it generous
             "generationConfig": {"maxOutputTokens": max(2048, max_tokens * 3)}}
+    if json_mode:
+        body["generationConfig"]["responseMimeType"] = "application/json"
+    return body
 
 
 def _gemini_text(payload):
@@ -92,12 +95,12 @@ def _discover_models(key):
     return flash[:4]
 
 
-def _gemini(system, messages, max_tokens):
+def _gemini(system, messages, max_tokens, json_mode=False):
     key = os.environ["GEMINI_API_KEY"]
     wanted = os.environ.get("AI_MODEL")
     order = [m for m in [wanted, _good["gemini"], *GEMINI_DEFAULTS] if m]
     tried, last = [], (0, {})
-    body = _gemini_body(system, messages, max_tokens)
+    body = _gemini_body(system, messages, max_tokens, json_mode)
 
     def attempt(model):
         nonlocal last
@@ -135,7 +138,7 @@ def _gemini(system, messages, max_tokens):
 
 
 # ---------------------------------------------------------------- Anthropic
-def _anthropic(system, messages, max_tokens):
+def _anthropic(system, messages, max_tokens, json_mode=False):
     status, payload = _http("POST", "https://api.anthropic.com/v1/messages",
                             {"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01"},
                             {"model": os.environ.get("AI_MODEL", "claude-haiku-5-5"), "max_tokens": max_tokens, "system": system, "messages": messages})
@@ -144,11 +147,11 @@ def _anthropic(system, messages, max_tokens):
     return "".join(b.get("text", "") for b in payload.get("content", []) if b.get("type") == "text").strip()
 
 
-def complete(system, messages, max_tokens=700):
+def complete(system, messages, max_tokens=700, json_mode=False):
     """messages: [{'role': 'user'|'assistant', 'content': str}] starting with a user message."""
     if not ai_enabled():
         raise AIError("AI is not set up on this server yet.")
-    text = (_anthropic if provider() == "anthropic" else _gemini)(system, messages, max_tokens)
+    text = (_anthropic if provider() == "anthropic" else _gemini)(system, messages, max_tokens, json_mode)
     if not text:
         raise AIError("The AI did not return an answer. Please try again.")
     return text

@@ -1216,11 +1216,62 @@ def ai_guard(user):
         raise ValidationError("You have reached the hourly AI limit. Please try again later.")
 
 
-def ai_call(system, messages, max_tokens=700):
+def ai_call(system, messages, max_tokens=700, json_mode=False):
     try:
-        return ai.complete(system, messages, max_tokens)
+        return ai.complete(system, messages, max_tokens, json_mode)
     except ai.AIError as err:
         raise ValidationError(str(err))
+
+
+DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def _hm(minutes):
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def free_windows(entries, now_min, day_end=22 * 60, min_len=30):
+    """Gaps (at least min_len minutes) left in today's timetable, from now until the evening."""
+    cur, out = max(now_min, 6 * 60), []
+    for start, end in sorted((e.start_min, e.end_min) for e in entries if e.end_min > now_min):
+        if start - cur >= min_len:
+            out.append(f"{_hm(cur)}-{_hm(start)}")
+        cur = max(cur, end)
+    if day_end - cur >= min_len:
+        out.append(f"{_hm(cur)}-{_hm(day_end)}")
+    return out
+
+
+def clean_actions(raw):
+    """Check the actions the AI proposed. The user still has to tap to add each one."""
+    out = []
+    for a in (raw or [])[:6]:
+        if not isinstance(a, dict):
+            continue
+        title = re.sub(r"\s+", " ", str(a.get("title", "")).strip())
+        if a.get("type") == "add_task" and title:
+            due = a.get("due") if parse_dt(a.get("due"), "%Y-%m-%d") else ""
+            tm = a.get("time") if due and re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(a.get("time") or "")) else ""
+            out.append({"type": "add_task", "title": title[:255], "due": due, "time": tm,
+                        "priority": a.get("priority") if a.get("priority") in ("low", "medium", "high") else "medium",
+                        "tags": [str(t).strip()[:24] for t in (a.get("tags") or []) if str(t).strip()][:5]})
+        elif a.get("type") == "add_timetable" and title:
+            days = sorted({d for d in (a.get("days") or []) if isinstance(d, int) and 0 <= d <= 6})
+            try:
+                start, end = minutes_of(a.get("start")), minutes_of(a.get("end"))
+            except ValidationError:
+                continue
+            if days and end > start:
+                out.append({"type": "add_timetable", "title": title[:120], "days": days, "start": _hm(start), "end": _hm(end)})
+    return out
+
+
+def try_json(text):
+    text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
+    try:
+        return json.loads(text[text.index("{"): text.rindex("}") + 1])
+    except (ValueError, json.JSONDecodeError):
+        return None
 
 
 @app.route("/api/ai/chat", methods=["POST"])
@@ -1228,23 +1279,43 @@ def ai_call(system, messages, max_tokens=700):
 def api_ai_chat(user):
     ai_guard(user)
     data = request.get_json(silent=True) or {}
-    msgs = [{"role": m["role"], "content": str(m.get("content", ""))[:2000]} for m in (data.get("messages") or [])[-10:]
+    msgs = [{"role": m["role"], "content": str(m.get("content", ""))[:2000]} for m in (data.get("messages") or [])[-12:]
             if isinstance(m, dict) and m.get("role") in ("user", "assistant") and str(m.get("content", "")).strip()]
     while msgs and msgs[0]["role"] != "user":
         msgs.pop(0)
     if not msgs or msgs[-1]["role"] != "user":
         raise ValidationError("Please type a message.")
     now = parse_dt(data.get("now"), "%Y-%m-%dT%H:%M") or utcnow()
-    tasks = Task.query.filter(Task.user_id == user.id, Task.completed_at.is_(None)).order_by(Task.due_date.is_(None), Task.due_date).limit(40).all()
-    tt = TimetableEntry.query.filter_by(user_id=user.id, day=now.weekday()).order_by(TimetableEntry.start_min).all()
-    context = {"now": now.strftime("%A %d %B %Y, %H:%M"),
-               "pending_tasks": [{"title": t.task, "due": iso(t.due_date), "priority": (t.priority or TaskPriority.MEDIUM).value} for t in tasks],
-               "todays_timetable": [{"title": e.title, "from": f"{e.start_min // 60:02d}:{e.start_min % 60:02d}", "to": f"{e.end_min // 60:02d}:{e.end_min % 60:02d}"} for e in tt]}
-    system = (f"You are the Do.iT assistant inside a to-do and timetable app. You are talking to {user.display_name}. "
-              "Give short, friendly, practical answers (under 150 words). Use plain text; short lists with dashes are fine. "
-              "You can only give advice: you cannot add or change tasks yourself, so suggest what the user could do. "
-              "Use this live data when relevant:\n" + json.dumps(context))
-    return jsonify(reply=ai_call(system, msgs, 600))
+    now_min = now.hour * 60 + now.minute
+    tasks = (Task.query.filter(Task.user_id == user.id, Task.completed_at.is_(None))
+             .order_by(Task.due_date.is_(None), Task.due_date).limit(60).all())
+    week = TimetableEntry.query.filter_by(user_id=user.id).order_by(TimetableEntry.day, TimetableEntry.start_min).limit(100).all()
+    today_entries = [e for e in week if e.day == now.weekday()]
+    context = {
+        "now": now.strftime("%A %d %B %Y, %H:%M"), "today_is_day_number": now.weekday(),
+        "pending_tasks": [{"title": t.task, "due": iso(t.due_date) if t.due_date else None,
+                           "overdue": bool(t.due_date and (t.due_date < now if t.due_has_time else t.due_date.date() < now.date())),
+                           "priority": (t.priority or TaskPriority.MEDIUM).value, "tags": split_tags(t.tags),
+                           "steps_left": sum(1 for s in t.subtasks if not s.done)} for t in tasks],
+        "weekly_timetable": [{"day": DAY_NAMES[e.day], "from": _hm(e.start_min), "to": _hm(e.end_min), "title": e.title} for e in week],
+        "free_time_left_today": free_windows(today_entries, now_min)}
+    system = (
+        f"You are Do.iT Assistant, a sharp, warm productivity coach inside a to-do, timetable and diary app. You are talking to {user.display_name}.\n"
+        "RULES:\n"
+        "- Use ONLY the live data below. Refer to real task and class names. Never invent tasks, classes or times that are not in the data.\n"
+        "- When asked to plan, give a short time-blocked schedule that respects the timetable and the free windows. Put urgent and overdue work first.\n"
+        "- Be concrete and brief (under 170 words unless asked for more). If the request is unclear, ask ONE short question.\n"
+        "- Write in the same language the user writes in. Plain text only: no markdown symbols, use short lines starting with a dash.\n"
+        "- You cannot change anything yourself. When the user asks you to add, schedule or plan something concrete, you may PROPOSE actions; the user taps to confirm.\n"
+        'REPLY FORMAT: return ONLY a JSON object: {"reply": "your message", "actions": []}.\n'
+        'Action shapes: {"type":"add_task","title":"...","due":"YYYY-MM-DD or null","time":"HH:MM or null","priority":"low|medium|high","tags":["..."]} and '
+        '{"type":"add_timetable","title":"...","days":[0=Monday ... 6=Sunday],"start":"HH:MM","end":"HH:MM"}. Use at most 6 actions, and an empty list when none are needed.\n'
+        "LIVE DATA:\n" + json.dumps(context, ensure_ascii=False))
+    raw = ai_call(system, msgs, 700, json_mode=True)
+    parsed = try_json(raw)
+    if parsed and isinstance(parsed.get("reply"), str) and parsed["reply"].strip():
+        return jsonify(reply=parsed["reply"].strip(), actions=clean_actions(parsed.get("actions")))
+    return jsonify(reply=raw, actions=[])
 
 
 def _parse_json(text):
@@ -1277,14 +1348,24 @@ def api_ai_breakdown(user):
 def api_ai_note(user):
     ai_guard(user)
     data = request.get_json(silent=True) or {}
-    text = str(data.get("text", "")).strip()[:8000]
+    action = data.get("action")
+    if action == "week":  # weekly review: the server gathers the last 7 days of entries, only when the user asks
+        today = (parse_dt(data.get("now"), "%Y-%m-%dT%H:%M") or utcnow()).date()
+        entries = (Note.query.filter(Note.user_id == user.id, Note.entry_date >= today - timedelta(days=6), Note.entry_date <= today)
+                   .order_by(Note.entry_date).all())
+        text = "\n\n".join(f"{n.entry_date:%A %d %B}" + (f" (mood: {n.mood})" if n.mood else "") + (f" - {n.title}" if n.title else "") + "\n" + (n.body or "")
+                            for n in entries if (n.body or n.title))[:7000]
+        if not text.strip():
+            raise ValidationError("There are no diary entries from the last 7 days yet.")
+    else:
+        text = str(data.get("text", "")).strip()[:8000]
     if not text:
         raise ValidationError("Write something first.")
     prompts = {
-        "polish": "Fix spelling, grammar and punctuation, and split run-on speech into sentences and paragraphs. Keep the author's words, voice, meaning and language. Return ONLY the corrected text.",
+        "week": "You are a kind journaling coach. Read this week of diary entries and reply, in the same language, with three short parts: 'Highlights' (2 bullets), 'Patterns I notice' (2 bullets about mood, energy or habits) and 'One thing to try next week' (1 sentence). Be warm and specific, under 150 words, plain text with dashes.",
+        "polish": "The text was probably typed by voice, so fix spelling, grammar and punctuation, split run-on speech into sentences and paragraphs, and remove words or whole sentences that are accidentally repeated by the speech recognition (the same phrase twice in a row). Keep the author's words, voice, meaning and language. Return ONLY the corrected text.",
         "summarize": "Summarize this diary entry in 2 to 3 warm, plain sentences, in the same language. Return ONLY the summary.",
         "reflect": "Read this diary entry and offer three gentle reflection questions that could help the writer think about their day. Use a short numbered list, in the same language. Return ONLY the questions."}
-    action = data.get("action")
     if action not in prompts:
         raise ValidationError("Unknown action.")
     return jsonify(text=ai_call(prompts[action], [{"role": "user", "content": text}], 1500))

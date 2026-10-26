@@ -6,8 +6,8 @@ Flask + PostgreSQL (SQLite for quick local tests). Classic navy-and-white interf
 - **Tasks**: quick add with plain text (`Call Ada tomorrow 5pm !high #family`), priorities, tags, notes, checklists, repeating tasks, smart views, search, calendar view, undo
 - **Weekly timetable**: editable table (Mon–Sun), table and day views, colours, print; reminders **30 min before, 5 min before and at the start time**
 - **Diary**: ruled-paper notes with autosave, mood, pinning, search
-- **Voice typing** in the diary and quick-add (speak, and it types; say “full stop”, “comma”, “new line”)
-- **AI assistant** (plan my day, break a goal into a checklist, tidy/summarise/reflect on diary entries) using Google Gemini (free) or Anthropic Claude
+- **Voice typing** in the diary, quick-add and AI chat (no repeated words; say “full stop”, “comma”, “new line”), with optional **auto-tidy by AI** after you stop speaking
+- **AI assistant** that sees your tasks, weekly timetable and free time, and can propose tasks/timetable entries you confirm with one tap; weekly diary review; tidy/summarise/reflect using Google Gemini (free) or Anthropic Claude
 - **Accounts**: sign in with username or email; the account is created only after the emailed link is confirmed (valid 1 hour, resend any time); forgot username/password by email; delete account; download all your data
 
 - **Automatic email reminders** for tasks and timetable, plus an optional morning summary
