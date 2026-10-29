@@ -24,9 +24,9 @@ const QUOTES = [['Well done is better than well said.', 'Benjamin Franklin'], ['
 function h(tag, attrs, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
-    if (v == null || v === false) continue;
+    if (v == null || (v === false && !k.startsWith('aria-'))) continue;
     if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
-    else e.setAttribute(k, v === true ? '' : v);
+    else e.setAttribute(k, k.startsWith('aria-') ? String(v) : v === true ? '' : v);   // aria-selected must read "true", not an empty string
   }
   for (const k of kids.flat()) if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(k));
   return e;
@@ -46,12 +46,13 @@ const fmtMin = (m) => fmtTime(new Date(2000, 0, 1, Math.floor(m / 60), m % 60));
 const hhmm = (m) => `${p2(Math.floor(m / 60))}:${p2(m % 60)}`;
 const todayIdx = (d = new Date()) => (d.getDay() + 6) % 7;
 const nowMin = (d = new Date()) => d.getHours() * 60 + d.getMinutes();
-const buzz = (p) => { if (navigator.vibrate && navigator.userActivation && navigator.userActivation.hasBeenActive) navigator.vibrate(p); };
+const vibOn = () => store.get('vibOn', 'on') === 'on';
+const buzz = (p) => { if (vibOn() && navigator.vibrate && navigator.userActivation && navigator.userActivation.hasBeenActive) navigator.vibrate(p); };
 const closeDlg = (d) => { if (d.open) d.close(); };
 const showErr = (m, id = 'ed-error') => { $(id).textContent = m; $(id).hidden = false; };
 
 let lastError = '';
-async function api(method, url, body) {
+async function api(method, url, body, opts = {}) {
   try {
     const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
       body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin' });
@@ -59,12 +60,12 @@ async function api(method, url, body) {
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || 'Something went wrong.');
     return data;
-  } catch (err) { lastError = err.message || 'Network problem. Please try again.'; toast(lastError); return null; }
+  } catch (err) { lastError = err.message || 'Network problem. Please try again.'; if (!opts.quiet) toast(lastError); return null; }
 }
 function toast(msg, undo, label) {
   const t = h('div', { class: 'toast', role: 'status' }, msg);
   if (undo) t.append(h('button', { type: 'button', onclick: () => { undo(); t.remove(); } }, label ? label : [icon('undo'), 'Undo']));
-  $('toasts').append(t); setTimeout(() => t.remove(), undo ? 7000 : 3200);
+  $('toasts').append(t); setTimeout(() => t.remove(), undo ? 7000 : Math.max(3200, msg.length * 70));
 }
 const put = (task) => { const i = S.tasks.findIndex((t) => t.id === task.id); i >= 0 ? (S.tasks[i] = task) : S.tasks.unshift(task); };
 const emptyBox = (t, s, ...extra) => h('div', { class: 'empty' }, icon('check'), h('div', {}, h('b', {}, t)), h('div', {}, s), ...extra);
@@ -181,8 +182,8 @@ function row(t, now) {
 
 /* ---------- navigation ---------- */
 async function go(tab) {
-  if (S.tab === 'notes' && tab !== 'notes') { dNote.stop(); await flushNote(); }
-  S.tab = tab; document.querySelectorAll('.page').forEach((p) => { p.hidden = p.dataset.page !== tab; });
+  if (S.tab === 'notes' && tab !== 'notes') { stopNoteVoice(); await flushNote(); }
+  S.tab = tab; if (tab === 'timetable') S.ttFocus = true; document.querySelectorAll('.page').forEach((p) => { p.hidden = p.dataset.page !== tab; });
   document.querySelectorAll('.nav-btn').forEach((b) => (b.dataset.tab === tab ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')));
   const m = { timetable: ['New activity', 'Add a new activity'], notes: ['New entry', 'Write a new diary entry'] }[tab] || ['New task', 'Add a new task'];
   $('fab-text').textContent = m[0]; $('fab').setAttribute('aria-label', m[1]);
@@ -288,9 +289,8 @@ $('ed-delete').addEventListener('click', () => { const t = S.tasks.find((x) => x
 $('ed-remind').addEventListener('change', () => { remindTouched = true; remindHint(); });
 $('ed-time').addEventListener('change', () => { if ($('ed-time').value && $('ed-date').value && !remindTouched && $('ed-remind').value === 'none') $('ed-remind').value = '0'; remindHint(); });
 $('ed-date').addEventListener('change', remindHint);
-let prev = null; const stopPrev = () => { if (prev) { prev.pause(); prev = null; } };
-$('ed-preview').addEventListener('click', () => { stopPrev(); armAudio(); prev = new Audio(window.SOUNDS[$('ed-sound').value]); prev.play().catch(() => beepOnce()); setTimeout(stopPrev, 3500); });
-ed.addEventListener('close', stopPrev);
+$('ed-preview').addEventListener('click', () => previewTone($('ed-sound').value));
+ed.addEventListener('close', stopPreview);
 $('ed-form').addEventListener('submit', async (e) => {
   e.preventDefault(); const title = $('ed-name').value.trim(); if (!title) return showErr('Please enter a task name.');
   const date = $('ed-date').value, time = $('ed-time').value, mode = $('ed-remind').value; let reminder = '';
@@ -328,7 +328,26 @@ $('cal-prev').addEventListener('click', () => { S.cal = new Date(S.cal.getFullYe
 $('cal-next').addEventListener('click', () => { S.cal = new Date(S.cal.getFullYear(), S.cal.getMonth() + 1, 1); renderCalendar(); });
 
 /* ---------- TIMETABLE ---------- */
-const ttSorted = () => [...S.tt].sort((a, b) => a.day - b.day || a.start - b.start);
+const ttSorted = () => [...S.tt].sort((a, b) => a.day - b.day || a.start - b.start || a.end - b.end);
+/* The grid rounds times into uniform blocks for layout only. Saved times stay exactly as typed and are always shown. */
+const MER = /[\s\u202f]*(AM|PM)$/i;
+const fmtRange = (a, b) => { const A = fmtMin(a), B = fmtMin(b), ma = A.match(MER), mb = B.match(MER);
+  return ma && mb && ma[1].toLowerCase() === mb[1].toLowerCase() ? A.replace(MER, '') + ' – ' + B : A + ' – ' + B; };
+const durText = (m) => (m >= 60 ? Math.floor(m / 60) + ' h' + (m % 60 ? ' ' + (m % 60) + ' min' : '') : m + ' min');
+const ttStep = () => (store.get('ttStep', '60') === '30' ? 30 : 60);
+const ttShowAll = () => store.get('ttAll', 'off') === 'on';
+function buildGrid(step) {
+  const cols = DN.map((_, d) => {
+    const items = S.tt.filter((e) => e.day === d).map((e) => { const s = Math.floor(e.start / step) * step; return { e, s, f: Math.max(Math.ceil(e.end / step) * step, s + step) }; })
+      .sort((a, b) => a.s - b.s || a.e.start - b.e.start || a.e.end - b.e.end);
+    const clusters = []; let cur = null;   // activities that touch the same block share one cell, so nothing collides
+    for (const it of items) { if (cur && it.s < cur.f) { cur.items.push(it); cur.f = Math.max(cur.f, it.f); } else { cur = { s: it.s, f: it.f, items: [it] }; clusters.push(cur); } }
+    return clusters; });
+  const all = cols.flat(), blocks = new Set();
+  if (ttShowAll()) { const lo = Math.min(...all.map((c) => c.s)), hi = Math.max(...all.map((c) => c.f)); for (let b = lo; b < hi; b += step) blocks.add(b); }
+  else all.forEach((c) => { for (let b = c.s; b < c.f; b += step) blocks.add(b); });
+  return { cols, rows: [...blocks].sort((a, b) => a - b), step };
+}
 function nextEntry(now = new Date()) {
   const di = todayIdx(now), nm = nowMin(now); let best = null;
   for (const e of S.tt) { const off = (e.day - di + 7) % 7; if (off === 0 && e.start <= nm) continue;
@@ -360,43 +379,63 @@ function renderAgenda(now) {
 function ttCell(e, now) {
   const isNow = e.day === todayIdx(now) && e.start <= nowMin(now) && nowMin(now) < e.end;
   return h('button', { class: 'tt-cell' + (isNow ? ' now' : ''), type: 'button', 'data-c': e.color, onclick: () => openTT(e), 'aria-label': `${e.title}, ${DF[e.day]} ${fmtMin(e.start)} to ${fmtMin(e.end)}. Edit` },
-    h('b', {}, e.title), e.location ? h('small', {}, e.location) : null, !e.alerts ? h('small', {}, 'Reminders off') : null);
+    h('small', { class: 'tm' }, fmtRange(e.start, e.end)), h('b', {}, e.title), e.location ? h('small', {}, e.location) : null, !e.alerts ? h('small', {}, 'Reminders off') : null);
 }
 function renderTimetable() {
   const now = new Date(), ti = todayIdx(now), tableMode = S.ttview === 'table';
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ti);
+  const dateOf = (i) => new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
   document.querySelectorAll('#tt-view button').forEach((b) => b.setAttribute('aria-checked', b.dataset.v === S.ttview));
-  $('tt-wrap').hidden = !tableMode; $('tt-day').hidden = tableMode; $('tt-day-tabs').hidden = tableMode;
+  $('tt-wrap').hidden = !tableMode; $('tt-day').hidden = tableMode; $('tt-day-tabs').hidden = tableMode; $('tt-grid-opts').hidden = !tableMode;
   const cur = currentEntries(now)[0], nx = nextEntry(now), cards = [];
   if (cur) cards.push(h('div', { class: 'now-card', 'data-c': cur.color }, h('small', {}, 'Happening now'), h('b', {}, cur.title), h('span', {}, `Until ${fmtMin(cur.end)}` + (cur.location ? ' · ' + cur.location : ''))));
   if (nx) cards.push(h('div', { class: 'now-card', 'data-c': nx.e.color }, h('small', {}, 'Up next'), h('b', {}, nx.e.title),
     h('span', {}, (nx.off === 0 ? 'Today' : nx.off === 1 ? 'Tomorrow' : DF[nx.e.day]) + ' at ' + fmtMin(nx.e.start) + (nx.off === 0 ? ' · ' + untilText(nx.mins) : ''))));
   $('tt-now').replaceChildren(...cards);
   if (!S.tt.length) {
-    $('tt-day').hidden = true; $('tt-day-tabs').hidden = true; $('tt-wrap').hidden = false;
+    $('tt-day').hidden = true; $('tt-day-tabs').hidden = true; $('tt-grid-opts').hidden = true; $('tt-wrap').hidden = false;
     $('tt-wrap').replaceChildren(emptyBox('Your timetable is empty', 'Add your first activity, or start with an example week you can edit.',
-      h('div', { class: 'head-tools', style: 'justify-content:center;margin-top:.8rem' }, h('button', { class: 'btn primary', onclick: () => openTT(null) }, 'Add activity'), h('button', { class: 'btn', onclick: addSample }, 'Add example week'))));
+      h('div', { class: 'head-tools', style: 'justify-content:center;margin-top:.8rem' }, h('button', { class: 'btn primary', onclick: () => openTT(null, { day: S.ttDay }) }, 'Add activity'), h('button', { class: 'btn', onclick: addSample }, 'Add example week'))));
     return;
   }
+  const pick = (i) => { S.ttDay = i; S.ttFocus = true; renderTimetable(); };
   if (tableMode) {
-    const slots = [...new Map(S.tt.map((e) => [e.start + '-' + e.end, [e.start, e.end]])).values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-    const table = h('table', { class: 'tt' },
-      h('caption', { class: 'sr' }, 'Weekly timetable'),
-      h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, 'Time'), DN.map((d, i) => h('th', { scope: 'col', class: i === ti ? 'today' : '' }, d)))),
-      h('tbody', {}, slots.map(([s, e]) => h('tr', {}, h('th', { scope: 'row' }, fmtMin(s), h('br'), '– ' + fmtMin(e)),
-        DN.map((_, d) => { const here = S.tt.filter((x) => x.day === d && x.start === s && x.end === e);
-          return h('td', { class: d === ti ? 'today' : '' }, here.length ? here.map((x) => ttCell(x, now)) :
-            h('button', { class: 'tt-empty', type: 'button', 'aria-label': `Add activity on ${DF[d]} ${fmtMin(s)}`, onclick: () => openTT(null, { day: d, start: s, end: e }) }, icon('plus'))); })))));
+    const { cols, rows, step } = buildGrid(ttStep());
+    const head = DN.map((d, i) => h('th', { scope: 'col', class: (i === ti ? 'today ' : '') + (i === S.ttDay ? 'sel' : '') },
+      h('button', { class: 'dh', type: 'button', 'aria-pressed': i === S.ttDay, title: 'Select ' + DF[i] + (i === ti ? ' (today)' : ''), onclick: () => pick(i) },
+        h('span', { class: 'dn' }, d), h('span', { class: 'dd' }, dateOf(i).getDate()))));
+    const skip = Array(7).fill(0), trs = [];
+    rows.forEach((blk, ri) => {
+      const tds = [];
+      for (let d = 0; d < 7; d++) {
+        if (skip[d] > 0) { skip[d]--; continue; }   // this cell is covered by a taller activity above
+        const c = cols[d].find((x) => x.s === blk), cls = (d === ti ? 'today ' : '') + (d === S.ttDay ? 'sel' : '');
+        if (c) { const span = (c.f - c.s) / step; skip[d] = span - 1;
+          tds.push(h('td', { class: cls, rowspan: span > 1 ? span : null }, h('div', { class: 'tt-cluster', style: `--rows:${span}` }, c.items.map((it) => ttCell(it.e, now))))); }
+        else tds.push(h('td', { class: cls }, h('button', { class: 'tt-empty', type: 'button', 'aria-label': `Add activity on ${DF[d]} at ${fmtMin(blk)}`,
+          onclick: () => openTT(null, { day: d, start: blk, end: Math.min(blk + step, 1439) }) }, icon('plus'))));
+      }
+      trs.push(h('tr', { class: ri > 0 && blk - rows[ri - 1] > step ? 'gap' : '' }, h('th', { scope: 'row' }, fmtMin(blk)), tds));
+    });
+    const table = h('table', { class: 'tt' }, h('caption', { class: 'sr' }, 'Weekly timetable'),
+      h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, 'Time'), head)), h('tbody', {}, trs));
     $('tt-wrap').replaceChildren(table);
+    if (S.ttFocus) { S.ttFocus = false; const th = table.querySelector('thead th.sel'); if (th) $('tt-wrap').scrollLeft = Math.max(0, th.offsetLeft - 130); }   // bring the chosen day into view on phones
   } else {
-    $('tt-day-tabs').replaceChildren(...DN.map((d, i) => h('button', { role: 'tab', class: i === ti ? 'today' : '', 'aria-selected': S.ttDay === i, onclick: () => { S.ttDay = i; renderTimetable(); } }, d)));
-    const list = ttSorted().filter((e) => e.day === S.ttDay);
-    $('tt-day').replaceChildren(...(list.length ? list.map((e) => h('button', { class: 'tt-card', type: 'button', 'data-c': e.color, onclick: () => openTT(e) },
-      h('span', { class: 'tm' }, fmtMin(e.start), h('br'), '– ' + fmtMin(e.end)), h('span', {}, h('b', {}, e.title), e.location ? h('small', {}, e.location) : null), e.alerts ? icon('bell') : null))
+    $('tt-day-tabs').replaceChildren(...DN.map((d, i) => h('button', { role: 'tab', class: i === ti ? 'today' : '', 'aria-selected': S.ttDay === i, onclick: () => pick(i) }, d)));
+    const list = ttSorted().filter((e) => e.day === S.ttDay), nm = nowMin(now);
+    const headEl = h('div', { class: 'day-head' }, h('h2', {}, DF[S.ttDay]), h('span', { class: 'muted' }, dateOf(S.ttDay).toLocaleDateString([], { day: 'numeric', month: 'long' }) + (S.ttDay === ti ? ' · Today' : '')));
+    $('tt-day').replaceChildren(headEl, ...(list.length ? list.map((e) => h('button', { class: 'tt-card' + (S.ttDay === ti && e.start <= nm && nm < e.end ? ' now' : ''), type: 'button', 'data-c': e.color, onclick: () => openTT(e) },
+      h('span', { class: 'tm' }, fmtMin(e.start), h('br'), '– ' + fmtMin(e.end)), h('span', {}, h('b', {}, e.title), h('small', {}, durText(e.end - e.start) + (e.location ? ' · ' + e.location : ''))), e.alerts ? icon('bell') : null))
       : [emptyBox('Nothing on ' + DF[S.ttDay], 'Tap Add activity to plan this day.')]));
   }
 }
+$('tt-step').value = String(ttStep()); $('tt-all').checked = ttShowAll();
+$('tt-step').addEventListener('change', (e) => { store.set('ttStep', e.target.value); renderTimetable(); });
+$('tt-all').addEventListener('change', (e) => { store.set('ttAll', e.target.checked ? 'on' : 'off'); renderTimetable(); });
+$('tt-today').addEventListener('click', () => { S.ttDay = todayIdx(); S.ttFocus = true; renderTimetable(); });
 $('tt-view').addEventListener('click', (e) => { const v = e.target.closest('button'); if (!v) return; S.ttview = v.dataset.v; store.set('ttview', S.ttview); renderTimetable(); });
-$('tt-add').addEventListener('click', () => openTT(null, S.ttview === 'day' ? { day: S.ttDay } : null));
+$('tt-add').addEventListener('click', () => openTT(null, { day: S.ttDay }));
 $('tt-print').addEventListener('click', () => { S.ttview = 'table'; renderTimetable(); window.print(); });
 $('tt-clear').addEventListener('click', async () => { if (!S.tt.length || !confirm('Remove every activity from your timetable?')) return;
   if (await api('POST', '/api/timetable/clear')) { S.tt = []; render(); toast('Timetable cleared'); } });
@@ -417,7 +456,7 @@ function openTT(e, pre) {
   S.ttEditing = e ? e.id : null; $('tt-title').textContent = e ? 'Edit activity' : 'Add activity'; $('tt-error').hidden = true;
   $('tt-name').value = e ? e.title : ''; $('tt-start').value = e ? hhmm(e.start) : pre && pre.start != null ? hhmm(pre.start) : '';
   $('tt-end').value = e ? hhmm(e.end) : pre && pre.end != null ? hhmm(pre.end) : ''; $('tt-loc').value = e ? e.location : '';
-  document.querySelectorAll('#tt-days input').forEach((i) => { i.checked = e ? +i.value === e.day : pre && pre.day != null ? +i.value === pre.day : +i.value === todayIdx(); });
+  document.querySelectorAll('#tt-days input').forEach((i) => { i.checked = e ? +i.value === e.day : pre && pre.day != null ? +i.value === pre.day : +i.value === S.ttDay; });
   const col = e ? e.color : 'blue'; document.querySelectorAll('#tt-colors input').forEach((i) => { i.checked = i.value === col; });
   $('tt-alerts').checked = e ? e.alerts : true; $('tt-delete').hidden = !e; $('tt-save').textContent = e ? 'Save changes' : 'Add activity';
   $('tt-days-l').textContent = e ? 'Day' : 'Day(s)'; tdlg.showModal(); if (!e) $('tt-name').focus();
@@ -436,7 +475,7 @@ $('tt-form').addEventListener('submit', async (ev) => {
   let r;
   if (S.ttEditing) { r = await api('PATCH', `/api/timetable/${S.ttEditing}`, { ...body, day: days[0] }); if (r) S.tt = S.tt.map((x) => (x.id === r.entry.id ? r.entry : x)); }
   else { r = await api('POST', '/api/timetable', { ...body, days }); if (r) S.tt.push(...r.entries); }
-  btn.disabled = false; if (!r) return; closeDlg(tdlg); render(); toast(S.ttEditing ? 'Activity updated' : 'Activity added');
+  btn.disabled = false; if (!r) return; if (days.length === 1) S.ttDay = days[0]; closeDlg(tdlg); render(); toast(S.ttEditing ? 'Activity updated' : 'Activity added');
 });
 
 /* ---------- timetable reminders: 30 min, 5 min, at start ---------- */
@@ -491,7 +530,7 @@ function fillNote(n) {
   ntMood = n ? n.mood : ''; ntPinned = n ? n.pinned : false; paintMood(); paintPin(); countWords();
   $('nt-status').textContent = n ? 'Saved' : 'New entry'; wrap.classList.add('editing');
 }
-async function openNote(id) { dNote.stop(); await flushNote(); S.noteId = id; fillNote(S.notes.find((n) => n.id === id)); renderNoteList(); }
+async function openNote(id) { stopNoteVoice(); await flushNote(); S.noteId = id; fillNote(S.notes.find((n) => n.id === id)); renderNoteList(); }
 async function newNote(date) {
   await flushNote(); S.noteId = 'new'; fillNote(null); if (date) $('nt-date').value = date;
   if (S.tab !== 'notes') await go('notes'); renderNoteList(); $('nt-body').focus();
@@ -533,28 +572,78 @@ function renderDiaryPrompt() {
 document.addEventListener('visibilitychange', () => { if (document.hidden && ntTimer) flushNote(); });
 addEventListener('pagehide', () => { if (ntTimer) flushNote(); });
 
-/* ---------- sound (desktop, Android and iOS) ---------- */
-const player = new Audio(); player.preload = 'auto'; let actx = null, unlocked = false, beepTimer = null, ringSound = 'classic';
+/* ---------- sound (desktop, Android and iOS): audio files + tones made in the browser ---------- */
+const player = new Audio(); player.preload = 'auto'; let actx = null, master = null, unlocked = false, beepTimer = null, ringSound = 'classic', synthStop = null, previewStop = null;
+const TONES = [['classic', 'Classic'], ['digital', 'Digital beep'], ['phone', 'Phone ringtone'], ['rooster', 'Rooster'], ['chime', 'Soft chime'], ['bell', 'Temple bell'], ['marimba', 'Marimba'],
+  ['rise', 'Gentle rise'], ['melody', 'Morning melody'], ['pulse', 'Soft pulses'], ['arcade', 'Arcade'], ['siren', 'Siren (loud)'], ['vibrate', 'Vibrate only (no sound)']];
+const volume = () => Math.min(1, Math.max(0.15, +store.get('alarmVol', '1') || 1));
+const midi = (m) => 440 * Math.pow(2, (m - 69) / 12);
+function blip(c, out, t, freq, dur, type = 'sine', vol = 0.5) {
+  const o = c.createOscillator(), g = c.createGain(); o.type = type; o.frequency.setValueAtTime(freq, t);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g).connect(out); o.start(t); o.stop(t + dur + 0.05);
+}
+const SYNTH = {   // each tone plays one cycle starting at time t; the cycle is repeated while the alarm rings
+  chime: { len: 2.6, play: (c, o, t) => [84, 79, 76].forEach((m, i) => blip(c, o, t + i * 0.38, midi(m), 1.4, 'sine', 0.5)) },
+  bell: { len: 3.2, play: (c, o, t) => [1, 2.76, 5.4, 8.9].forEach((k, i) => blip(c, o, t, 523.25 * k, 2.6 / (i + 1), 'sine', 0.45 / (i + 1))) },
+  marimba: { len: 2, play: (c, o, t) => [72, 76, 79, 84, 79, 76].forEach((m, i) => blip(c, o, t + i * 0.19, midi(m), 0.32, 'triangle', 0.6)) },
+  rise: { len: 2.8, play: (c, o, t) => { const os = c.createOscillator(), g = c.createGain(); os.type = 'sine'; os.frequency.setValueAtTime(380, t); os.frequency.exponentialRampToValueAtTime(980, t + 2);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.5, t + 1.7); g.gain.exponentialRampToValueAtTime(0.0001, t + 2.5); os.connect(g).connect(o); os.start(t); os.stop(t + 2.6); } },
+  melody: { len: 3.6, play: (c, o, t) => [67, 72, 76, 79, 76, 72, 74, 67].forEach((m, i) => blip(c, o, t + i * 0.4, midi(m), 0.5, 'triangle', 0.45)) },
+  pulse: { len: 1.3, play: (c, o, t) => [0, 0.24].forEach((d) => blip(c, o, t + d, 740, 0.15, 'sine', 0.65)) },
+  arcade: { len: 1.5, play: (c, o, t) => [72, 76, 79, 84, 79, 84, 88, 91].forEach((m, i) => blip(c, o, t + i * 0.09, midi(m), 0.1, 'square', 0.22)) },
+  siren: { len: 1.7, play: (c, o, t) => { const os = c.createOscillator(), g = c.createGain(); os.type = 'sawtooth'; for (let i = 0; i < 4; i++) { os.frequency.setValueAtTime(650, t + i * 0.42);
+    os.frequency.linearRampToValueAtTime(980, t + i * 0.42 + 0.21); os.frequency.linearRampToValueAtTime(650, t + i * 0.42 + 0.42); } g.gain.value = 0.28; os.connect(g).connect(o); os.start(t); os.stop(t + 1.7); } },
+};
+function ctxOut() {
+  try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === 'suspended') actx.resume(); } catch (e) { return null; }
+  if (!master) { master = actx.createGain(); master.connect(actx.destination); }
+  master.gain.value = volume(); return master;
+}
+function startSynth(name) {   // returns a function that stops the tone
+  const out = ctxOut(), def = SYNTH[name]; if (!out || !def) return null; let alive = true;
+  const cycle = () => { if (alive) def.play(actx, out, actx.currentTime + 0.05); }; cycle(); const id = setInterval(cycle, def.len * 1000);
+  return () => { alive = false; clearInterval(id); try { master.disconnect(); } catch (e) {} master = null; };
+}
 function armAudio() {
   try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === 'suspended') actx.resume(); } catch (e) {}
   if (!unlocked) { unlocked = true; player.muted = true; player.src = window.SOUNDS.digital;
     player.play().then(() => { player.pause(); player.muted = false; }).catch(() => { player.muted = false; }); }
   paintSound();
-  if (ringing.size && player.paused && !beepTimer) startSound(ringSound);
+  if (ringing.size && player.paused && !beepTimer && !synthStop && ringSound !== 'vibrate') startSound(ringSound);
 }
 ['pointerdown', 'keydown', 'touchstart'].forEach((ev) => document.addEventListener(ev, armAudio, { passive: true }));
 function beepOnce() {
-  if (!actx) return; const t0 = actx.currentTime;
-  [0, .25, .5].forEach((o) => { const osc = actx.createOscillator(), g = actx.createGain(); osc.type = 'square'; osc.frequency.value = 880;
-    g.gain.setValueAtTime(.0001, t0 + o); g.gain.exponentialRampToValueAtTime(.35, t0 + o + .02); g.gain.exponentialRampToValueAtTime(.0001, t0 + o + .2);
-    osc.connect(g).connect(actx.destination); osc.start(t0 + o); osc.stop(t0 + o + .22); });
+  const out = ctxOut(); if (!out) return; const t0 = actx.currentTime;
+  [0, 0.25, 0.5].forEach((o) => blip(actx, out, t0 + o, 880, 0.2, 'square', 0.35));
 }
-function chime() { armAudio(); const a = new Audio(window.SOUNDS.digital); a.play().then(() => setTimeout(() => a.pause(), 2500)).catch(beepOnce); }
+function chime() { armAudio(); const a = new Audio(window.SOUNDS.digital); a.volume = volume(); a.play().then(() => setTimeout(() => a.pause(), 2500)).catch(beepOnce); }
 function startSound(name) {
-  ringSound = name; stopSound(); player.loop = true; player.muted = false; player.src = window.SOUNDS[name] || window.SOUNDS.classic;
+  ringSound = name; stopSound(); player.volume = volume();
+  if (name === 'vibrate') return;
+  if (SYNTH[name]) { synthStop = startSynth(name); if (synthStop) return; }
+  player.loop = true; player.muted = false; player.src = window.SOUNDS[name] || window.SOUNDS.classic;
   player.play().catch(() => { beepOnce(); beepTimer = setInterval(beepOnce, 1200); });
 }
-function stopSound() { player.pause(); clearInterval(beepTimer); beepTimer = null; }
+function stopSound() { player.pause(); clearInterval(beepTimer); beepTimer = null; if (synthStop) { synthStop(); synthStop = null; } }
+function stopPreview() { if (previewStop) { previewStop(); previewStop = null; } }
+function previewTone(name) {   // 'Play' buttons: hear a tone for a few seconds (and feel the vibration)
+  stopPreview(); armAudio();
+  if (name === 'vibrate') { vibrateAlarm(true); toast(navigator.vibrate ? 'Vibrating now' : 'This device cannot vibrate. Try on an Android phone.'); return; }
+  if (SYNTH[name]) { const stop = startSynth(name); previewStop = () => { stop && stop(); }; }
+  else { const a = new Audio(window.SOUNDS[name] || window.SOUNDS.classic); a.volume = volume(); a.play().catch(beepOnce); previewStop = () => a.pause(); }
+  setTimeout(stopPreview, name in SYNTH && SYNTH[name].len < 3 ? 3500 : 4500);
+}
+/* vibration */
+const VIB = { short: [300, 150, 300], long: [900, 300, 900], heartbeat: [150, 100, 150, 600], buzzy: [200, 100, 200, 100, 200, 100, 200], sos: [100, 100, 100, 100, 100, 300, 300, 100, 300, 100, 300, 300, 100, 100, 100, 100, 100] };
+const vibPattern = () => VIB[store.get('vibPat', 'long')] || VIB.long, vibLen = () => vibPattern().reduce((a, b) => a + b, 0);
+function vibrateAlarm(force) {
+  if (!navigator.vibrate || (!force && !vibOn())) return false;
+  if (!(navigator.userActivation && navigator.userActivation.hasBeenActive)) return false;   // browsers only allow vibration after you have tapped the page once
+  return navigator.vibrate(vibPattern());
+}
+function fillToneSelects() { ['ed-sound', 'def-sound'].forEach((id) => $(id).replaceChildren(...TONES.map(([v, l]) => h('option', { value: v }, l)))); }
+fillToneSelects();
 const soundReady = () => unlocked || (navigator.userActivation && navigator.userActivation.hasBeenActive);
 function paintSound() { const ready = !!soundReady(); $('sound-banner').hidden = ready; $('alarm-pip').classList.toggle('on', ready); }
 $('sound-banner').addEventListener('click', () => { armAudio(); testAlarm(); });
@@ -564,7 +653,7 @@ $('btn-alarm').addEventListener('click', () => { armAudio(); toast(soundReady() 
 const ringing = new Map(); let flashTimer = null, vibTimer = null;
 function dismissRing(id) {
   const r = ringing.get(id); if (!r) return; r.card.remove(); ringing.delete(id);
-  if (!ringing.size) { stopSound(); clearInterval(flashTimer); clearInterval(vibTimer); flashTimer = vibTimer = null; render(); }
+  if (!ringing.size) { stopSound(); clearInterval(flashTimer); clearInterval(vibTimer); flashTimer = vibTimer = null; if (navigator.vibrate) navigator.vibrate(0); render(); }
 }
 function notify(title, body, tag) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
@@ -587,7 +676,7 @@ function ring(t) {
   ringing.set(t.id, { card }); $('alarms').append(card);
   if (first) { startSound(t.alarm_sound);
     flashTimer = setInterval(() => { document.title = document.title.startsWith('⏰') ? '🔔 Reminder!' : '⏰ ' + t.title; }, 900);
-    vibTimer = setInterval(() => buzz([400, 200, 400]), 2000); }
+    vibrateAlarm(); vibTimer = setInterval(vibrateAlarm, vibLen() + 700); }
   if (!local) notify('⏰ ' + t.title, t.due ? 'Due ' + dueLabel(t) : 'Your reminder is due', 'doit-' + t.id);
 }
 const testAlarm = () => ring({ id: -1, title: 'Alarm test: this is how your reminders will ring', due: null, alarm_sound: store.get('defSound', 'classic') });
@@ -654,31 +743,67 @@ $('pass-form').addEventListener('submit', async (e) => { e.preventDefault();
 
 /* ---------- VOICE TYPING (Web Speech API: Chrome, Edge, Safari) ---------- */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-function formatSpeech(t, before) {
-  let s = t.trim()
-    .replace(/\s*\bnew paragraph\b\s*/gi, '\n\n').replace(/\s*\bnew line\b\s*/gi, '\n').replace(/\s*\bfull stop\b/gi, '.')
+/* PUNCT-START */
+const bare = (w) => w.toLowerCase().replace(/[^a-z']/g, '');
+const SUBORD = new Set(['when', 'if', 'because', 'after', 'before', 'while', 'although', 'since', 'once', 'unless', 'until', 'whenever', 'though']);
+const GLUE = new Set(['and', 'but', 'or', 'so', 'because', 'that', 'which', 'who', 'when', 'while', 'if', 'as', 'to', 'of', 'the', 'a', 'an', 'in', 'on', 'at', 'with', 'for', 'from', 'by', 'my', 'his', 'her',
+  'our', 'their', 'your', 'than', 'am', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'will', 'would', 'could', 'should', 'can', 'do', 'did', 'does', 'not', 'very', 'really', 'just', 'also',
+  'about', 'into', 'like', 'what', 'how', 'why', 'where', 'think', 'know', 'said', 'say', 'says', 'believe', 'hope', 'feel', 'guess', 'mean', 'see', 'wish', 'bet', 'suppose', 'told', 'tell', 'ask', 'asked',
+  'wonder', 'hear', 'heard', 'thought', 'felt', 'whether', 'then', 'now', 'each', 'every', 'any', 'some', 'him', 'them', 'us', 'me', 'let', 'make', 'made']);
+const STARTERS = new Set(['i', "i'm", "i've", "i'll", "i'd", 'we', "we're", "we've", 'they', "they're", 'he', 'she', "he's", "she's", 'then', 'finally', 'however', 'anyway', 'meanwhile', 'afterwards', 'suddenly',
+  'unfortunately', 'honestly', 'firstly', 'secondly', 'thirdly']);
+const QSTART = new Set(['what', 'why', 'how', 'who', 'which', 'where', 'do', 'does', 'did', 'is', 'are', 'was', 'were', 'can', 'could', 'will', 'would', 'should']);
+const INTRO = new Set(['however', 'anyway', 'finally', 'firstly', 'secondly', 'thirdly', 'honestly', 'unfortunately', 'thankfully', 'suddenly', 'meanwhile', 'afterwards', 'yes', 'okay']);
+const WH = new Set(['what', 'why', 'how', 'where', 'who', 'when']);
+const QAUX = new Set(['is', 'are', 'was', 'were', 'do', 'does', 'did', 'can', 'could', 'will', 'would', 'should', 'time', 'many', 'much', 'long', 'old', 'far']);
+const PRON = new Set(['i', 'we', 'they', 'he', 'she', 'it', 'you']);
+function punctLine(line) {   // adds missing full stops, commas and question marks to one line of unpunctuated speech
+  const toks = line.trim().split(/\s+/).filter(Boolean); if (!toks.length) return '';
+  const out = []; let segStart = 0, sub = SUBORD.has(bare(toks[0]));
+  const markFor = (from) => (QSTART.has(bare(out[from])) && out.length - from <= 20 ? '?' : '.');
+  const close = (mark) => { const k = out.length - 1; if (k >= 0 && !/[.!?,;:]$/.test(out[k])) out[k] += mark; };
+  for (let i = 0; i < toks.length; i++) {
+    const w = toks[i], b = bare(w), prev = out.length ? out[out.length - 1] : '', len = out.length - segStart, pEnds = /[.!?,;:]$/.test(prev);
+    if (i > 0 && /[.!?]$/.test(prev)) { segStart = out.length; sub = SUBORD.has(b); }                                 // somebody already ended the sentence
+    else if (i > 0 && !pEnds && len >= 4 && STARTERS.has(b) && !GLUE.has(bare(prev))) { if (sub) { close(','); sub = false; } else { close(markFor(segStart)); segStart = out.length; sub = SUBORD.has(b); } }
+    else if (i > 0 && !pEnds && len >= 4 && WH.has(b) && QAUX.has(bare(toks[i + 1] || '')) && !GLUE.has(bare(prev))) { close(sub ? ',' : markFor(segStart)); if (!sub) { segStart = out.length; } sub = false; }   // "...happy what time is it"
+    else if (i > 0 && !pEnds && len >= 3 && (b === 'but' || (b === 'so' && PRON.has(bare(toks[i + 1] || ''))))) close(',');
+    out.push(w);
+    if (INTRO.has(b) && out.length - segStart === 1 && i + 1 < toks.length && !/[.,;:!?]$/.test(w)) out[out.length - 1] += ',';
+  }
+  close(markFor(segStart));
+  return out.join(' ').replace(/\bi\b(?!\.e)/g, 'I').replace(/\bI'(m|ve|ll|d)\b/gi, (m, x) => "I'" + x.toLowerCase());
+}
+const smartPunct = (text) => text.split('\n').map(punctLine).join('\n');
+function speechCommands(t) {   // "full stop", "comma", "new line"... spoken as commands
+  return t.trim().replace(/\s*\bnew paragraph\b\s*/gi, '\n\n').replace(/\s*\bnew line\b\s*/gi, '\n').replace(/\s*\bfull stop\b/gi, '.')
     .replace(/\s*\bcomma\b/gi, ',').replace(/\s*\bquestion mark\b/gi, '?').replace(/\s*\bexclamation (?:mark|point)\b/gi, '!');
+}
+/* PUNCT-END */
+function formatSpeech(parts, before) {   // parts = the chunks the browser recognised; punctuation is added to each chunk
+  let s = parts.map((p) => smartPunct(speechCommands(p))).filter(Boolean).join(' ');
   if (!s) return '';
   if (!before.trim() || /[.!?]\s*$/.test(before) || /\n\s*$/.test(before)) s = s.charAt(0).toUpperCase() + s.slice(1);
-  s = s.replace(/([.!?]\s+|\n)([a-z])/g, (m, a, b) => a + b.toUpperCase());
+  s = s.replace(/([.!?]\s+|\n)([a-z])/g, (m, x, y) => x + y.toUpperCase());
   return (before && !/\s$/.test(before) && !/^[.,!?\n]/.test(s) ? ' ' : '') + s;
 }
 const hmToMin = (t) => +t.slice(0, 2) * 60 + +t.slice(3, 5);
 /* Browsers sometimes report the same phrase twice (or a growing copy of it). Keep only one. */
-function joinFinals(parts) {
+const joinFinals = (parts) => joinParts(parts).join(' ');
+function joinParts(parts) {
   const out = [];
   for (let p of parts) { p = p.trim(); if (!p) continue; const last = out.length ? out[out.length - 1] : null, x = p.toLowerCase(), y = last ? last.toLowerCase() : '';
     if (last && x.startsWith(y)) out[out.length - 1] = p;         // the same phrase, now longer: keep the longer one
     else if (last && (y.endsWith(x) || y === x)) continue;          // an exact repeat: skip it
     else out.push(p); }
-  return out.join(' ');
+  return out;
 }
 function makeDictation({ input, button, getLang, onText, onState, once, onDone }) {
   let rec = null, on = false, gen = 0, base = '', after = '', committed = '', finals = [], interim = '', lastCommit = '', lastCommitAt = 0, lastHeard = 0;
   const paint = (v) => { button.classList.toggle('on', v); button.setAttribute('aria-pressed', v); if (onState) onState(v); };
   const norm = (t) => t.trim().toLowerCase().replace(/[.,!?]/g, '').replace(/\s+/g, ' ');
   const isRepeat = (t) => { const n = norm(t); return n.length >= 3 && Date.now() - lastCommitAt < 4000 && norm(committed).endsWith(n); };   // the browser said it again after a restart
-  const session = () => { const t = formatSpeech(joinFinals(finals), base + committed); return isRepeat(t) ? '' : t; };
+  const session = () => { const t = formatSpeech(joinParts(finals), base + committed); return isRepeat(t) ? '' : t; };
   function render() {   // the text box is always rebuilt from scratch, so nothing can be added twice
     const before = base + committed + session(), shown = interim.trim() ? (before && !/\s$/.test(before) ? ' ' : '') + interim.trim() : '';
     input.value = before + shown + after; onText && onText(); }
@@ -716,32 +841,104 @@ document.querySelectorAll('.mic, .mic-btn').forEach((b) => { b.hidden = !SR; });
 $('nt-lang').value = store.get('speechLang', 'en-NG'); $('nt-lang').addEventListener('change', (e) => store.set('speechLang', e.target.value));
 const dNote = makeDictation({ input: $('nt-body'), button: $('nt-mic'), getLang: () => $('nt-lang').value, onText: () => { countWords(); queueSave(); },
   onState: (v) => { $('nt-hint').hidden = !v; $('nt-mic').lastElementChild.textContent = v ? 'Stop' : 'Speak'; },
-  onDone: (d) => { if (!A.ai_enabled || d.text.split(/\s+/).length < 5) return; if ($('nt-auto').checked) autoTidy(d);
-    else if (d.text.split(/\s+/).length >= 8) toast('Finished speaking?', () => runNoteAI('polish'), 'Tidy up with AI'); } });
-$('nt-auto').checked = store.get('autoTidy', A.ai_enabled ? 'on' : 'off') === 'on' && !!A.ai_enabled; $('nt-auto').disabled = !A.ai_enabled;
+  onDone: (d) => { if (d.text.split(/\s+/).length < 5) return; if ($('nt-auto').checked) autoTidy(d);
+    else if (d.text.split(/\s+/).length >= 8) toast('Finished speaking?', () => runNoteAI('polish'), 'Tidy up'); } });
+$('nt-auto').checked = store.get('autoTidy', 'on') === 'on';
 $('nt-auto').addEventListener('change', (e) => store.set('autoTidy', e.target.checked ? 'on' : 'off'));
-async function autoTidy(d) {   // speak, then the AI cleans up only the part you just dictated
+async function autoTidy(d) {   // speak, then only the part you just dictated is cleaned up
   const body = $('nt-body'), original = body.value; if (body.value.slice(d.start, d.end) !== d.text) return;
-  $('nt-status').textContent = 'Tidying with AI…'; const r = await api('POST', '/api/ai/note', { action: 'polish', text: d.text.trim() }); if (!r) { $('nt-status').textContent = 'Saved'; return; }
-  if (body.value.slice(d.start, d.end) !== d.text) return;   // you kept typing meanwhile: leave it alone
-  body.value = body.value.slice(0, d.start) + d.text.match(/^\s*/)[0] + r.text + body.value.slice(d.end); countWords(); queueSave();
-  toast('Tidied with AI', () => { body.value = original; countWords(); queueSave(); }, 'Undo'); }
-$('nt-mic').addEventListener('click', () => { if (S.noteId === null) newNote().then(() => dNote.toggle()); else dNote.toggle(); });
+  $('nt-status').textContent = 'Tidying…'; let out = null, basic = false;
+  if (A.ai_enabled) { const r = await api('POST', '/api/ai/note', { action: 'polish', text: d.text.trim() }, { quiet: true }); if (r) out = r.text; }
+  if (out === null) { out = localTidy(d.text.trim()); basic = true; }
+  if (body.value.slice(d.start, d.end) !== d.text) { $('nt-status').textContent = 'Saved'; return; }   // you kept typing meanwhile: leave it alone
+  body.value = body.value.slice(0, d.start) + d.text.match(/^\s*/)[0] + out + body.value.slice(d.end); countWords(); queueSave();
+  toast(basic ? 'Tidied (basic mode)' : 'Tidied with AI', () => { body.value = original; countWords(); queueSave(); }, 'Undo'); }
+
+/* ---------- SMART VOICE: record, then the AI writes it down with punctuation (like ChatGPT voice typing) ---------- */
+async function blobToWav16k(blob) {
+  const Ctx = window.AudioContext || window.webkitAudioContext, ctx = new Ctx(), buf = await ctx.decodeAudioData(await blob.arrayBuffer()); ctx.close && ctx.close();
+  const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(buf.duration * 16000)), 16000), src = off.createBufferSource(); src.buffer = buf; src.connect(off.destination); src.start();
+  const pcm = (await off.startRendering()).getChannelData(0), out = new DataView(new ArrayBuffer(44 + pcm.length * 2)), str = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); out.setUint32(4, 36 + pcm.length * 2, true); str(8, 'WAVEfmt '); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true);
+  out.setUint32(24, 16000, true); out.setUint32(28, 32000, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true); str(36, 'data'); out.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) out.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 0x7fff, true);
+  return new Blob([out], { type: 'audio/wav' });
+}
+const blobToB64 = (blob) => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.onerror = rej; fr.readAsDataURL(blob); });
+function makeSmartMic({ input, button, getLang, onText, onDone }) {
+  let rec = null, stream = null, chunks = [], on = false, busy = false, discard = false, timer = null, t0 = 0, base = '', after = '';
+  const label = button.querySelector('span'), idle = label ? label.textContent : '';
+  const paint = (v, text) => { button.classList.toggle('on', v); button.setAttribute('aria-pressed', v); button.disabled = busy; if (label) label.textContent = text || idle; };
+  const supported = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+  async function start() {
+    if (on || busy) return; if (!supported()) return toast('Smart voice is not supported in this browser. Switch to Live voice.');
+    armAudio(); try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { return toast('Microphone is blocked. Allow it in your browser (lock icon near the address bar), then try again.'); }
+    const a = input.selectionStart ?? input.value.length, b = input.selectionEnd ?? a; base = input.value.slice(0, a); after = input.value.slice(b);
+    chunks = []; discard = false; rec = new MediaRecorder(stream); rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); }; rec.onstop = finish; rec.start();
+    on = true; t0 = Date.now(); paint(true, 'Stop · 0s'); timer = setInterval(() => { const s = Math.floor((Date.now() - t0) / 1000); paint(true, `Stop · ${s}s`); if (s >= 90) stop(); }, 500);
+  }
+  function stop() { if (!on) return; on = false; clearInterval(timer); try { rec.stop(); } catch (e) { finish(); } stream && stream.getTracks().forEach((t) => t.stop()); }
+  function cancel() { discard = true; stop(); }
+  async function finish() {
+    if (discard) { paint(false); return; }
+    busy = true; paint(false, 'Writing it down…');
+    try {
+      const blob = new Blob(chunks, { type: (rec && rec.mimeType) || 'audio/webm' }); if (blob.size < 1500) { toast('I did not hear anything.'); return; }
+      const wav = await blobToWav16k(blob), r = await api('POST', '/api/ai/transcribe', { audio: await blobToB64(wav), lang: getLang() }, { quiet: true });
+      if (!r) { toast(lastError || 'Smart voice failed. Try Live voice.'); return; }
+      const text = (r.text || '').trim(); if (!text) { toast('I could not hear any clear speech.'); return; }
+      const sep = base && !/\s$/.test(base) && !/^[.,!?\n]/.test(text) ? ' ' : ''; input.value = base + sep + text + after;
+      const pos = (base + sep + text).length; try { input.setSelectionRange(pos, pos); } catch (e) {} onText && onText(); onDone && onDone({ text, start: base.length, end: pos });
+    } catch (e) { toast('Smart voice could not read that recording. Try Live voice.'); }
+    finally { busy = false; paint(false); }
+  }
+  return { toggle: () => (on ? stop() : start()), stop, cancel, supported, get active() { return on || busy; } };
+}
+const sNote = makeSmartMic({ input: $('nt-body'), button: $('nt-mic'), getLang: () => $('nt-lang').value, onText: () => { countWords(); queueSave(); } });
+const noteVoice = () => (store.get('voiceMode', A.voice_ai ? 'smart' : 'live') === 'smart' && A.voice_ai && sNote.supported() ? sNote : dNote);
+function stopNoteVoice() { dNote.stop(); sNote.cancel(); }
+$('nt-voice').value = A.voice_ai ? store.get('voiceMode', 'smart') : 'live'; $('nt-voice').querySelector('option[value=smart]').disabled = !A.voice_ai;
+$('nt-voice').addEventListener('change', (e) => store.set('voiceMode', e.target.value));
+$('nt-mic').addEventListener('click', () => { const go_ = () => { const v = noteVoice(); dNote.active && v !== dNote ? dNote.stop() : v.toggle(); }; if (S.noteId === null) newNote().then(go_); else go_(); });
 const dQuick = makeDictation({ input: $('quick-input'), button: $('quick-mic'), getLang: () => $('nt-lang').value, once: true, onText: () => $('quick-input').dispatchEvent(new Event('input')) });
 $('quick-mic').addEventListener('click', () => dQuick.toggle());
+
+/* ---------- basic tidy-up that needs no AI (used when the AI is off, busy or out of free quota) ---------- */
+const SPEECH_FIXES = { dont: "don't", cant: "can't", wont: "won't", didnt: "didn't", doesnt: "doesn't", isnt: "isn't", wasnt: "wasn't", couldnt: "couldn't",
+  shouldnt: "shouldn't", wouldnt: "wouldn't", arent: "aren't", havent: "haven't", hasnt: "hasn't", im: "I'm", ive: "I've", thats: "that's", whats: "what's", lets: "let's" };
+function localTidy(text) {
+  let t = text.replace(/\r/g, '').replace(/[ \t\u00a0]+/g, ' ').replace(/ *\n */g, '\n').trim();
+  t = t.replace(/\b([A-Za-z']+)(?:\s+\1\b)+/gi, '$1');                                  // "the the" -> "the"
+  for (let i = 0; i < 2; i++) t = t.replace(/\b((?:[A-Za-z']+\s+){1,24}[A-Za-z']+)[,.]?\s+\1\b/gi, '$1');   // a phrase said twice in a row
+  t = t.replace(/\b(dont|cant|wont|didnt|doesnt|isnt|wasnt|couldnt|shouldnt|wouldnt|arent|havent|hasnt|im|ive|thats|whats|lets)\b/gi, (m) => SPEECH_FIXES[m.toLowerCase()]);
+  t = t.replace(/\bi\b(?!\.e)/g, 'I').replace(/\bI'(m|ve|ll|d)\b/gi, (m, x) => "I'" + x.toLowerCase());
+  t = t.replace(/\s+([,.;:!?])/g, '$1').replace(/([,;:!?])(?=[A-Za-z])/g, '$1 ').replace(/\.(?=[A-Z][a-z])/g, '. ');
+  t = smartPunct(t);   // missing full stops, commas and question marks
+  t = t.split('\n').map((line) => { line = line.trim(); if (!line) return line;
+    line = line.charAt(0).toUpperCase() + line.slice(1);
+    return line.replace(/([.!?]\s+)([a-z])/g, (m, a, b) => a + b.toUpperCase()); }).join('\n');
+  return t.replace(/\n{3,}/g, '\n\n').trim();
+}
 
 /* ---------- AI: diary tools ---------- */
 let aiNoteRange = null;
 async function runNoteAI(action) {
-  if (!A.ai_enabled) return toast('AI is not set up on this server yet.');
   const body = $('nt-body'), sel = body.value.slice(body.selectionStart, body.selectionEnd).trim(), text = sel || body.value.trim();
   if (action !== 'week' && !text) return toast('Write or speak something first.');
+  if (!A.ai_enabled && action !== 'polish') return toast('AI is not set up on this server yet.');
   aiNoteRange = sel ? [body.selectionStart, body.selectionEnd] : null; const panel = $('nt-ai');
   $('nt-ai-title').textContent = { polish: 'Tidied version', summarize: 'Summary', reflect: 'Questions to think about', week: 'Your week in review' }[action];
-  $('nt-ai-text').textContent = 'Thinking…'; panel.hidden = false; $('nt-ai-replace').hidden = true; $('nt-ai-append').hidden = true;
-  const r = await api('POST', '/api/ai/note', { action, text, now: ymdhm(new Date()) });
-  if (!r) { $('nt-ai-text').textContent = lastError || 'The AI could not answer. Please try again.'; $('nt-ai-replace').hidden = true; $('nt-ai-append').hidden = true; return; }
-  $('nt-ai-text').textContent = r.text; $('nt-ai-replace').hidden = action !== 'polish'; $('nt-ai-append').hidden = false; $('nt-ai-replace').dataset.action = action;
+  $('nt-ai-text').textContent = 'Working on it…'; $('nt-ai-note').hidden = true; panel.hidden = false; $('nt-ai-replace').hidden = true; $('nt-ai-append').hidden = true;
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });   // the panel can sit below the page fold, so bring it into view
+  document.querySelectorAll('[data-ai-note]').forEach((b) => { b.disabled = true; });
+  let out = null, why = '';
+  if (A.ai_enabled) { const r = await api('POST', '/api/ai/note', { action, text, now: ymdhm(new Date()) }, { quiet: true }); if (r) out = r.text; else why = lastError; }
+  else why = 'AI is not set up on this server yet.';
+  document.querySelectorAll('[data-ai-note]').forEach((b) => { b.disabled = false; });
+  if (out === null && action === 'polish') {   // the AI could not help: still tidy the text with the built-in rules
+    out = localTidy(text); $('nt-ai-note').textContent = 'Basic tidy-up used (punctuation and capitals were added by simple rules) because: ' + why; $('nt-ai-note').hidden = false;
+  } else if (out === null) { $('nt-ai-text').textContent = why || 'The AI could not answer. Please try again.'; return; }
+  $('nt-ai-text').textContent = out; $('nt-ai-replace').hidden = action !== 'polish'; $('nt-ai-append').hidden = false; $('nt-ai-replace').dataset.action = action;
 }
 document.querySelectorAll('[data-ai-note]').forEach((b) => b.addEventListener('click', () => runNoteAI(b.dataset.aiNote)));
 $('nt-ai-x').addEventListener('click', () => { $('nt-ai').hidden = true; });
@@ -749,61 +946,166 @@ $('nt-ai-replace').addEventListener('click', () => { const b = $('nt-body'), t =
   b.value = aiNoteRange ? b.value.slice(0, aiNoteRange[0]) + t + b.value.slice(aiNoteRange[1]) : t; countWords(); queueSave(); $('nt-ai').hidden = true; toast('Entry updated'); });
 $('nt-ai-append').addEventListener('click', () => { const b = $('nt-body'); b.value = (b.value.trimEnd() + '\n\n' + $('nt-ai-text').textContent).trim(); countWords(); queueSave(); $('nt-ai').hidden = true; });
 
-/* ---------- AI assistant chat ---------- */
+/* ---------- AI assistant: chat, actions, and a hands-free voice conversation ---------- */
 const aiDlg = $('ai-dlg'); let aiMode = 'chat'; const aiHist = [];
 const bubble = (cls, ...kids) => { const m = h('div', { class: 'msg ' + cls }, ...kids); $('ai-log').append(m); $('ai-log').scrollTop = 1e9; return m; };
+const langCode = () => $('nt-lang').value || 'en-US';
+const speakOn = () => store.get('speakReplies', 'on') === 'on';
+function paintAiOptions() { $('ai-speak').checked = speakOn(); $('ai-auto').checked = store.get('aiAuto', 'off') === 'on'; }
 function openAI() {
-  aiDlg.showModal(); $('ai-note').textContent = A.ai_enabled ? 'AI can make mistakes. Your task titles and today’s timetable are shared with the AI service to answer you.' : 'AI is not set up on this server yet. The site owner needs to add an API key.';
-  if (!$('ai-log').children.length) bubble('bot', `Hi ${boot.user.name}! I can plan your day, break a big goal into steps, or help you fit study time into your timetable. What would you like?`);
+  aiDlg.showModal(); paintAiOptions(); $('ai-note').textContent = A.ai_enabled ? 'AI can make mistakes. Your task titles and today’s timetable are shared with the AI service to answer you.' : 'AI is not set up on this server yet. The site owner needs to add an API key.';
+  if (!$('ai-log').children.length) bubble('bot', `Hi ${boot.user.name}! Ask me to plan your day, or tell me what to do: “remind me to call Ada tomorrow at 5”, “add Chemistry on Monday 9 to 11”, “mark Buy rice as done”. You can also tap Talk to me and speak.`);
   $('ai-input').focus();
 }
 const AI_CHIPS = [['Plan my day', 'Plan the rest of my day hour by hour, using my timetable and tasks.'], ['Plan my week', 'Look at my timetable and tasks and help me plan my week. Suggest when to do each pending task.'],
   ['Overdue rescue', 'I have overdue or late tasks. Tell me what to do first and propose new realistic dates.'], ['Break down a goal', null],
   ['Study time', 'Find free time in my timetable this week and propose study blocks I can add.'], ['Motivate me', 'Give me a short, encouraging message to help me start my next task.']];
 $('ai-chips').replaceChildren(...AI_CHIPS.map(([l, q]) => h('button', { type: 'button', onclick: () => { if (q) sendAI(q); else { aiMode = 'goal'; $('ai-input').placeholder = 'Describe your goal, e.g. “Prepare for my chemistry exam”'; $('ai-input').focus(); bubble('bot', 'Tell me the goal and I will turn it into a checklist.'); } } }, l)));
-function actionLabel(a) {
-  if (a.type === 'add_task') return `Task: ${a.title}` + (a.due ? ' · ' + fmtDay(parseLocal(a.due)) + (a.time ? ' ' + fmtMin(hmToMin(a.time)) : '') : '');
-  return `${a.title} · ${a.days.map((d) => DN[d]).join(', ')} · ${fmtMin(hmToMin(a.start))}–${fmtMin(hmToMin(a.end))}`;
+function bestTitleMatch(list, title) {
+  const w = (title || '').toLowerCase().split(/\W+/).filter((x) => x.length > 2); if (!w.length) return null; let best = null, score = 0;
+  for (const t of list) { const tl = t.title.toLowerCase(), sc = w.filter((x) => tl.includes(x)).length / w.length; if (sc > score) { score = sc; best = t; } }
+  return score >= 0.6 ? best : null;
 }
-async function applyAction(a) {
+const findOpenTask = (a) => { const open = S.tasks.filter((t) => !t.completed_at); return open.find((t) => t.id === a.id) || bestTitleMatch(open, a.title); };
+function actionLabel(a) {
+  switch (a.type) {
+    case 'add_task': return `Task: ${a.title}` + (a.due ? ' · ' + fmtDay(parseLocal(a.due)) + (a.time ? ' ' + fmtMin(hmToMin(a.time)) : '') : '');
+    case 'add_timetable': return `${a.title} · ${a.days.map((d) => DN[d]).join(', ')} · ${fmtMin(hmToMin(a.start))}–${fmtMin(hmToMin(a.end))}`;
+    case 'complete_task': return `Mark done: ${(findOpenTask(a) || a).title}`;
+    case 'add_note': return `Add to today’s diary: ${a.text.slice(0, 60)}`;
+    case 'start_focus': return `Start a ${a.minutes}-minute focus timer`;
+    default: return `Open ${a.tab}`;
+  }
+}
+const ACTION_BTN = { add_task: 'Add task', add_timetable: 'Add to timetable', complete_task: 'Mark done', add_note: 'Add to diary', start_focus: 'Start timer', open: 'Open' };
+async function applyAction(a) {   // returns true/false and leaves a short sentence in a._msg
+  a._msg = '';
   if (a.type === 'add_task') {
-    const r = await api('POST', '/api/tasks', { title: a.title, priority: a.priority, tags: a.tags, due: a.due, due_time: a.time, reminder: a.due && a.time ? `${a.due}T${a.time}` : '',
-      alarm_sound: store.get('defSound', 'classic'), recurring: 'none' });
-    if (r) { put(r.task); render(); return true; } return false; }
-  const r = await api('POST', '/api/timetable', { title: a.title, days: a.days, start: a.start, end: a.end, color: 'blue', alerts: true });
-  if (r) { S.tt.push(...r.entries); render(); return true; } return false;
+    const r = await api('POST', '/api/tasks', { title: a.title, priority: a.priority, tags: a.tags, due: a.due, due_time: a.time, reminder: a.due && a.time ? `${a.due}T${a.time}` : '', alarm_sound: store.get('defSound', 'classic'), recurring: 'none' }, { quiet: true });
+    if (r) { put(r.task); render(); a._msg = `Added task “${a.title}”` + (a.due ? ' for ' + fmtDay(parseLocal(a.due)) + (a.time ? ' at ' + fmtMin(hmToMin(a.time)) : '') : ''); return true; }
+    a._msg = 'I could not add that task'; return false;
+  }
+  if (a.type === 'add_timetable') {
+    const r = await api('POST', '/api/timetable', { title: a.title, days: a.days, start: a.start, end: a.end, color: 'blue', alerts: true }, { quiet: true });
+    if (r) { S.tt.push(...r.entries); render(); a._msg = `Added “${a.title}” to your timetable`; return true; } a._msg = 'I could not add that to the timetable'; return false;
+  }
+  if (a.type === 'complete_task') {
+    const t = findOpenTask(a); if (!t) { a._msg = `I could not find “${a.title}” among your open tasks`; return false; }
+    await complete(t); a._msg = `Marked “${t.title}” as done`; return true;
+  }
+  if (a.type === 'add_note') {
+    const date = ymd(new Date()), ex = S.notes.find((n) => n.date === date), body = ex ? ex.body.trimEnd() + '\n\n' + a.text : a.text;
+    const r = ex ? await api('PATCH', `/api/notes/${ex.id}`, { date, title: ex.title, body, mood: ex.mood, pinned: ex.pinned }, { quiet: true }) : await api('POST', '/api/notes', { date, title: '', body, mood: '', pinned: false }, { quiet: true });
+    if (!r) { a._msg = 'I could not write in your diary'; return false; }
+    ex ? (S.notes = S.notes.map((n) => (n.id === r.note.id ? r.note : n))) : S.notes.unshift(r.note); sortNotes(); render(); a._msg = 'Added it to today’s diary'; return true;
+  }
+  if (a.type === 'start_focus') { F.mode = a.minutes; F.left = 0; F.endAt = Date.now() + a.minutes * 60000; F.running = true; store.set('fend', F.endAt); store.set('fmode', a.minutes); paintFocus(); a._msg = `Started a ${a.minutes} minute focus timer`; return true; }
+  if (a.type === 'open') { await go(a.tab); a._msg = `Opened ${a.tab}`; return true; }
+  return false;
 }
 const actionCard = (a) => h('div', { class: 'act-card' }, h('span', {}, actionLabel(a)),
-  h('button', { class: 'btn primary sm', type: 'button', onclick: async (e) => { const b = e.currentTarget; b.disabled = true; if (await applyAction(a)) b.textContent = 'Added ✓'; else b.disabled = false; } },
-    a.type === 'add_task' ? 'Add task' : 'Add to timetable'));
-async function sendAI(text) {
-  text = (text || '').trim(); if (!text) return; if (!A.ai_enabled) return toast('AI is not set up on this server yet.');
+  h('button', { class: 'btn primary sm', type: 'button', onclick: async (e) => { const b = e.currentTarget; b.disabled = true; if (await applyAction(a)) b.textContent = 'Done ✓'; else { b.disabled = false; toast(a._msg); } } }, ACTION_BTN[a.type] || 'Do it'));
+async function sendAI(text, opts = {}) {
+  text = (text || '').trim(); if (!text) return null; if (!A.ai_enabled) { toast('AI is not set up on this server yet.'); return null; }
   bubble('user', text); $('ai-input').value = ''; const typing = bubble('bot typing', 'Thinking…'); $('ai-send').disabled = true;
   if (aiMode === 'goal') {
-    aiMode = 'chat'; $('ai-input').placeholder = 'Ask me anything about your day…';
+    aiMode = 'chat'; $('ai-input').placeholder = 'Ask me anything, or tell me what to do…';
     const r = await api('POST', '/api/ai/breakdown', { goal: text }); typing.remove(); $('ai-send').disabled = false;
-    if (!r) return bubble('bot', lastError || 'Sorry, I could not do that right now.');
-    const m = bubble('bot', h('b', {}, r.title), h('ol', {}, r.steps.map((x) => h('li', {}, x))),
+    if (!r) { bubble('bot', lastError || 'Sorry, I could not do that right now.'); return null; }
+    bubble('bot', h('b', {}, r.title), h('ol', {}, r.steps.map((x) => h('li', {}, x))),
       h('button', { class: 'btn primary sm', type: 'button', onclick: async (e) => { e.target.disabled = true;
         const t = await api('POST', '/api/tasks', { title: r.title, priority: 'medium', alarm_sound: store.get('defSound', 'classic'), subtasks: r.steps.map((x) => ({ title: x, done: false })) });
         if (t) { put(t.task); S.open.add(t.task.id); render(); e.target.textContent = 'Added to your tasks ✓'; toast('Task with checklist added'); } else e.target.disabled = false; } }, 'Add as a task with checklist'));
-    return m;
+    return { speech: `Here is a checklist for ${r.title}.` };
   }
   aiHist.push({ role: 'user', content: text });
-  const r = await api('POST', '/api/ai/chat', { messages: aiHist, now: ymdhm(new Date()) }); typing.remove(); $('ai-send').disabled = false;
-  if (!r) { aiHist.pop(); return bubble('bot', lastError || 'Sorry, I could not answer just now. Please try again.'); }
-  aiHist.push({ role: 'assistant', content: r.reply }); const m = bubble('bot', r.reply);
-  const acts = r.actions || []; if (acts.length) { const box = h('div', { class: 'act-list' }, acts.map(actionCard));
-    if (acts.length > 1) box.append(h('button', { class: 'btn sm', type: 'button', onclick: async (e) => { e.target.disabled = true; for (const a of acts) await applyAction(a); e.target.textContent = 'All added ✓';
-      box.querySelectorAll('.act-card .btn').forEach((x) => { x.disabled = true; x.textContent = 'Added ✓'; }); } }, 'Add all'));
-    m.append(box); $('ai-log').scrollTop = 1e9; }
+  const r = await api('POST', '/api/ai/chat', { messages: aiHist, now: ymdhm(new Date()), voice: !!opts.voice }, { quiet: !!opts.voice }); typing.remove(); $('ai-send').disabled = false;
+  if (!r) { aiHist.pop(); const why = lastError || 'Sorry, I could not answer just now. Please try again.'; bubble('bot', why); return { speech: 'Sorry, ' + why.split('. ')[0] }; }
+  aiHist.push({ role: 'assistant', content: r.reply }); const m = bubble('bot', r.reply), acts = r.actions || [];
+  let failed = '';
+  if (acts.length && (opts.voice || store.get('aiAuto', 'off') === 'on')) {   // "do it for me": run the actions right away
+    const lines = []; for (const a of acts) { const ok = await applyAction(a); lines.push((ok ? '✓ ' : '✗ ') + a._msg); if (!ok && !failed) failed = a._msg; }
+    m.append(h('div', { class: 'act-done' }, lines.map((x) => h('div', {}, x)))); $('ai-log').scrollTop = 1e9;
+  } else if (acts.length) {
+    const box = h('div', { class: 'act-list' }, acts.map(actionCard));
+    if (acts.length > 1) box.append(h('button', { class: 'btn sm', type: 'button', onclick: async (e) => { e.target.disabled = true; for (const a of acts) await applyAction(a); e.target.textContent = 'All done ✓';
+      box.querySelectorAll('.act-card .btn').forEach((x) => { x.disabled = true; x.textContent = 'Done ✓'; }); } }, 'Do all'));
+    m.append(box); $('ai-log').scrollTop = 1e9;
+  }
+  const speech = failed ? 'Sorry, ' + failed : r.speech || r.reply;
+  if (!opts.voice && speakOn()) speak(speech);
+  return { speech };
 }
 $('ai-form').addEventListener('submit', (e) => { e.preventDefault(); sendAI($('ai-input').value); });
+$('ai-speak').addEventListener('change', (e) => { store.set('speakReplies', e.target.checked ? 'on' : 'off'); if (!e.target.checked && 'speechSynthesis' in window) speechSynthesis.cancel(); const p = $('speak-on'); if (p) p.checked = e.target.checked; });
+$('ai-auto').addEventListener('change', (e) => store.set('aiAuto', e.target.checked ? 'on' : 'off'));
+/* speaking back (text-to-speech built into the browser) */
+function pickVoice(lang) {
+  const vs = 'speechSynthesis' in window ? speechSynthesis.getVoices() : []; if (!vs.length) return null; const l = lang.toLowerCase(), pre = l.split('-')[0];
+  return vs.find((v) => v.lang.toLowerCase().replace('_', '-') === l) || vs.find((v) => v.lang.toLowerCase().startsWith(pre) && /natural|google|female|aria|zira|samantha/i.test(v.name)) || vs.find((v) => v.lang.toLowerCase().startsWith(pre)) || null;
+}
+function speak(text) {
+  return new Promise((resolve) => {
+    if (!('speechSynthesis' in window) || !text) return resolve();
+    const u = new SpeechSynthesisUtterance(String(text).replace(/[*_#`]/g, '')); u.lang = langCode(); const v = pickVoice(u.lang); if (v) u.voice = v; u.rate = 1.02;
+    let done = false; const end = () => { if (!done) { done = true; resolve(); } }; u.onend = end; u.onerror = end; setTimeout(end, 25000);
+    try { speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) { end(); }
+  });
+}
+/* voice conversation: listen, think, answer out loud, listen again */
+const V = { on: false, rec: null, misses: 0 };
+const vStatus = (t) => { $('ai-voice-status').hidden = !t; $('ai-vs-text').textContent = t || ''; aiDlg.classList.toggle('voice-on', !!t); };
+function listenOnce() {
+  return new Promise((resolve) => {
+    if (!SR) return resolve(''); const r = new SR(); r.lang = langCode(); r.interimResults = true; r.continuous = false; let text = '', done = false;
+    const finish = (v) => { if (done) return; done = true; V.rec = null; resolve(String(v || '').trim()); };
+    r.onresult = (e) => { let fin = '', itm = ''; for (let i = 0; i < e.results.length; i++) { const x = e.results[i]; if (x.isFinal) fin += x[0].transcript; else itm += x[0].transcript; } text = fin || itm; $('ai-input').value = text; if (fin) finish(fin); };
+    r.onerror = (e) => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { toast('Microphone is blocked. Allow it in your browser, then try again.'); V.on = false; } finish(''); };
+    r.onend = () => finish(text); V.rec = r; try { r.start(); } catch (e) { finish(''); }
+  });
+}
+async function voiceLoop() {
+  try { await voiceTurns(); } catch (e) { console.warn('Voice assistant stopped:', e); } finally { if (V.on) stopVoice(); }
+}
+async function voiceTurns() {
+  while (V.on) {
+    vStatus('Listening…'); const heard = await listenOnce(); if (!V.on) break;
+    if (!heard) { if (++V.misses >= 2) { stopVoice(); toast('I did not hear anything, so I stopped listening.'); break; } continue; }
+    V.misses = 0;
+    if (/^(stop|cancel|goodbye|bye|that'?s all|thank you|thanks|never ?mind)\b/i.test(heard) && heard.split(/\s+/).length <= 4) { vStatus('Goodbye'); await speak('Okay. Talk to you later.'); stopVoice(); break; }
+    vStatus('Thinking…'); const r = await sendAI(heard, { voice: true }); if (!V.on) break;
+    vStatus('Speaking…'); await speak(r && r.speech); $('ai-input').value = '';
+  }
+  if (!V.on) vStatus('');
+}
+function startVoice() {
+  if (!SR) return toast('The voice assistant needs Chrome, Edge or Safari.'); if (!A.ai_enabled) return toast('AI is not set up on this server yet.');
+  if (V.on) return; stopWake(); armAudio(); if (!aiDlg.open) openAI(); V.on = true; V.misses = 0; $('ai-talk').classList.add('on'); $('ai-talk').lastElementChild.textContent = 'Stop talking'; voiceLoop();
+}
+function stopVoice() {
+  V.on = false; $('ai-talk').classList.remove('on'); $('ai-talk').lastElementChild.textContent = 'Talk to me'; vStatus(''); $('ai-input').value = '';
+  try { V.rec && V.rec.abort(); } catch (e) {} if ('speechSynthesis' in window) speechSynthesis.cancel();
+}
+$('ai-talk').addEventListener('click', () => (V.on ? stopVoice() : startVoice()));
+$('btn-voice').addEventListener('click', () => { if (!aiDlg.open) openAI(); startVoice(); });
 const dAI = makeDictation({ input: $('ai-input'), button: $('ai-mic'), getLang: () => $('nt-lang').value, once: true, onDone: (d) => sendAI(d.text) });
 $('ai-mic').addEventListener('click', () => dAI.toggle());
-aiDlg.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => { dAI.stop(); closeDlg(aiDlg); }));
-aiDlg.addEventListener('close', () => dAI.stop());
+aiDlg.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => { dAI.stop(); stopVoice(); closeDlg(aiDlg); }));
+aiDlg.addEventListener('close', () => { dAI.stop(); stopVoice(); });
 ['btn-ai', 'nav-ai'].forEach((id) => $(id).addEventListener('click', openAI));
+/* hands-free: say "Hey Do it" while the app is open (Chrome / Edge; the microphone stays on, so it is optional) */
+const WAKE = /\b(hey|hi|okay|ok|hello)\W+(do[\s.\-]?it|doit|dew it|due it|do eat)\b/i; let wakeRec = null;
+const wakeWanted = () => store.get('wake', 'off') === 'on' && SR && !document.hidden;
+const voiceBusy = () => V.on || dNote.active || sNote.active || dAI.active || dQuick.active;
+function startWake() {
+  if (wakeRec || !wakeWanted() || voiceBusy()) return; const r = new SR(); r.continuous = true; r.interimResults = true; r.lang = langCode();
+  r.onresult = (e) => { let t = ''; for (let i = e.resultIndex; i < e.results.length; i++) t += e.results[i][0].transcript + ' '; if (WAKE.test(t)) { stopWake(); chime(); if (!aiDlg.open) openAI(); startVoice(); } };
+  r.onerror = (e) => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { store.set('wake', 'off'); $('hf-on').checked = false; toast('Hands-free needs microphone permission.'); } };
+  r.onend = () => { wakeRec = null; };
+  wakeRec = r; try { r.start(); } catch (e) { wakeRec = null; }
+}
+function stopWake() { if (wakeRec) { const r = wakeRec; wakeRec = null; r.onend = null; try { r.abort(); } catch (e) {} } }
+setInterval(() => { if (!wakeWanted() || voiceBusy()) stopWake(); else startWake(); }, 2500);
 
 /* ---------- email & recovery settings ---------- */
 function paintEmail() {
@@ -811,7 +1113,7 @@ function paintEmail() {
   $('em-status').textContent = !A.email ? 'Add your email so you can recover your username or password, and receive reminders.'
     : A.verified ? 'Confirmed ✓ — we can email you reminders and recovery links.' : 'Not confirmed yet. Open the confirmation link we emailed you.';
   if (!A.mail_enabled) $('em-status').textContent += ' (Email sending is not set up on this server yet.)';
-  $('em-resend').hidden = !A.email || A.verified; $('em-rem').checked = !!A.email_reminders; $('em-dig').checked = !!A.email_digest;
+  paintMailBanner(); $('em-resend').hidden = !A.email || A.verified; $('em-rem').checked = !!A.email_reminders; $('em-dig').checked = !!A.email_digest;
 }
 $('em-save').addEventListener('click', async () => {
   const r = await api('POST', '/api/account/email', { email: $('em-input').value }); if (!r) return;
@@ -823,7 +1125,14 @@ $('em-test').addEventListener('click', async () => { if (await api('POST', '/api
 $('em-rem').addEventListener('change', (e) => { A.email_reminders = e.target.checked; api('POST', '/api/account/prefs', { email_reminders: e.target.checked }); });
 $('em-dig').addEventListener('change', (e) => { A.email_digest = e.target.checked; api('POST', '/api/account/prefs', { email_digest: e.target.checked }); });
 try { const tz = Intl.DateTimeFormat().resolvedOptions().timeZone; if (tz && A.tz !== tz) { A.tz = tz; api('POST', '/api/account/timezone', { tz }); } } catch (e) {}
-paintEmail();
+function paintMailBanner() {
+  const need = A.mail_enabled && (!A.email || !A.verified); $('mail-banner').hidden = !need; if (!need) return;
+  $('mb-title').textContent = !A.email ? 'Add your email to get reminders' : 'Confirm your email to start reminders';
+  $('mb-text').textContent = !A.email ? 'Task and timetable emails need an address.' : `We sent a link to ${A.email}. Open it, or tap here to send it again.`;
+  $('mb-btn').textContent = !A.email ? 'Add email' : 'Resend'; }
+$('mail-banner').addEventListener('click', async () => { if (!A.email) return go('me'); if (await api('POST', '/api/account/resend')) toast('Confirmation email sent to ' + A.email); });
+$('em-check').addEventListener('click', async () => { toast('Checking…'); const r = await api('POST', '/api/account/reminder-check'); if (r) toast(r.message); });
+paintEmail(); paintMailBanner();
 
 
 /* ---------- profile: name, AI test, delete account ---------- */
@@ -843,6 +1152,19 @@ $('del-form').addEventListener('submit', async (e) => { e.preventDefault();
   if (!r) return showErr(lastError || 'Could not delete the account.', 'del-error');
   location.href = '/login?notice=' + encodeURIComponent('Your account and all its data were deleted.'); });
 dd.addEventListener('click', (e) => { if (e.target === dd) closeDlg(dd); });
+
+/* ---------- profile: tones, volume, vibration, hands-free ---------- */
+$('def-preview').addEventListener('click', () => previewTone($('def-sound').value));
+$('alarm-vol').value = Math.round(volume() * 100);
+$('alarm-vol').addEventListener('input', (e) => { store.set('alarmVol', String(e.target.value / 100)); player.volume = volume(); if (master) master.gain.value = volume(); });
+$('alarm-vol').addEventListener('change', () => previewTone($('def-sound').value));
+$('vib-on').checked = vibOn(); $('vib-on').addEventListener('change', (e) => { store.set('vibOn', e.target.checked ? 'on' : 'off'); if (e.target.checked) $('vib-test').click(); });
+$('vib-pat').value = store.get('vibPat', 'long'); $('vib-pat').addEventListener('change', (e) => { store.set('vibPat', e.target.value); $('vib-test').click(); });
+$('vib-test').addEventListener('click', () => { armAudio(); if (!navigator.vibrate) return toast('This device or browser cannot vibrate. Vibration works on Android phones (Chrome).'); vibrateAlarm(true); toast('Vibrating…'); });
+$('hf-on').checked = store.get('wake', 'off') === 'on';
+$('hf-on').addEventListener('change', (e) => { if (e.target.checked && !SR) { e.target.checked = false; return toast('Hands-free needs Chrome, Edge or Safari.'); } store.set('wake', e.target.checked ? 'on' : 'off'); armAudio();
+  toast(e.target.checked ? 'Hands-free is on. Say “Hey Do it” while this page is open.' : 'Hands-free is off'); if (!e.target.checked) stopWake(); });
+$('speak-on').checked = speakOn(); $('speak-on').addEventListener('change', (e) => { store.set('speakReplies', e.target.checked ? 'on' : 'off'); $('ai-speak').checked = e.target.checked; if (!e.target.checked && 'speechSynthesis' in window) speechSynthesis.cancel(); });
 
 /* ---------- install as an app ---------- */
 let installEvt = null;

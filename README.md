@@ -11,7 +11,9 @@ Flask + PostgreSQL (SQLite for quick local tests). Classic navy-and-white interf
 - **Accounts**: sign in with username or email; the account is created only after the emailed link is confirmed (valid 1 hour, resend any time); forgot username/password by email; delete account; download all your data
 
 - **Automatic email reminders** for tasks and timetable, plus an optional morning summary
-- **Alarms** that ring (sound, vibration, full-screen alert, notifications), focus timer, streaks and badges
+- **Voice assistant**: tap the mic (or say “Hey Do it”), speak a command such as “remind me to call Ada tomorrow at 5”; it does it in the app and answers out loud
+- **Smart voice typing**: record, and Gemini writes it down with punctuation like ChatGPT; Live voice adds punctuation by rules
+- **Alarms** with 13 tones (8 made in the browser), volume and vibration patterns (sound, vibration, full-screen alert, notifications), focus timer, streaks and badges
 - **SEO**: landing page, meta tags, Open Graph, JSON-LD, robots.txt, sitemap.xml; installable on phones
 
 ## Run locally
@@ -41,6 +43,7 @@ Then run `flask --app server db upgrade` once. To copy old SQLite data across (o
 | `SITE_URL` | Public address, used in SEO tags and the sitemap |
 | `COOKIE_SECURE=1` | HTTPS-only cookies (set in production) |
 | `MAIL_FROM`, `BREVO_API_KEY` | Sender address and Brevo key for emails (free: 300/day) |
+| `EMAIL_SCHEDULER`, `REMIND_WINDOW` | Built-in reminder checker (on by default, every minute) and how late (minutes) a missed reminder may still be sent |
 | `CRON_SECRET` | Secret that protects `/api/cron/reminders?key=...` (call it every 5 minutes) |
 | `DEFAULT_TZ`, `DIGEST_HOUR` | Fallback timezone and hour of the morning summary |
 | `GEMINI_API_KEY` or `ANTHROPIC_API_KEY` | Turns on the AI assistant (`AI_MODEL` optional) |

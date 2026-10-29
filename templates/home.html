@@ -21,9 +21,15 @@
       <header class="topbar">
         <button class="avatar" data-go="me" aria-label="Open profile" id="avatar"></button>
         <div class="who"><small id="today-date"></small><h1 id="greeting"></h1></div>
+        <button class="round-btn" id="btn-voice" aria-label="Talk to the voice assistant" title="Talk to the voice assistant"><svg class="ic"><use href="#i-mic"/></svg></button>
         <button class="round-btn" id="btn-ai" aria-label="Ask the AI assistant" title="Ask AI"><svg class="ic"><use href="#i-sparkle"/></svg></button>
         <button class="round-btn" id="btn-alarm" aria-label="Alarm sound status" title="Alarm sound"><svg class="ic"><use href="#i-bell"/></svg><i class="pip" id="alarm-pip"></i></button>
       </header>
+      <button class="sound-banner mail-banner" id="mail-banner" hidden>
+        <span class="sb-ic"><svg class="ic"><use href="#i-mail"/></svg></span>
+        <span class="sb-txt"><b id="mb-title">Confirm your email</b><small id="mb-text">Reminder emails start after you confirm your address.</small></span>
+        <span class="btn sm light" id="mb-btn">Fix it</span>
+      </button>
       <button class="sound-banner" id="sound-banner" hidden>
         <span class="sb-ic"><svg class="ic"><use href="#i-volume"/></svg></span>
         <span class="sb-txt"><b>Turn on alarm sound</b><small>Tap once so your reminders can ring out loud.</small></span>
@@ -123,10 +129,17 @@
           <button class="btn sm" id="tt-print"><svg class="ic"><use href="#i-print"/></svg> Print</button>
           <button class="btn primary sm" id="tt-add"><svg class="ic"><use href="#i-plus"/></svg> Add activity</button></div></header>
       <div class="tt-now" id="tt-now" aria-live="polite"></div>
+      <div class="tt-controls">
+        <button class="btn sm" id="tt-today" type="button">Today</button>
+        <span id="tt-grid-opts" class="tt-opts"><label class="mini-check">Grid <select id="tt-step" aria-label="Grid block size"><option value="30">30 min</option><option value="60">1 hour</option></select></label>
+          <label class="mini-check"><input type="checkbox" id="tt-all"> Show empty hours</label></span>
+        <span class="grow"></span>
+        <span class="tt-legend muted small"><i class="lg today"></i> Today <i class="lg sel"></i> Selected day</span>
+      </div>
       <div id="tt-day-tabs" class="day-tabs" role="tablist" hidden></div>
       <div class="tt-scroll" id="tt-wrap"></div>
       <div id="tt-day" class="list" hidden></div>
-      <p class="muted small tt-foot">Tip: tap an activity to edit it, or tap an empty cell to add one at that time. <button class="link" id="tt-clear">Clear timetable</button></p>
+      <p class="muted small tt-foot">Tip: tap a day name to select it, tap an activity to edit it, or tap an empty cell to add one. The weekly grid rounds times to the nearest block for tidy rows; the Day view and every activity show your exact times. <button class="link" id="tt-clear">Clear timetable</button></p>
     </section>
 
     <!-- NOTES / DIARY -->
@@ -147,19 +160,20 @@
           <div class="moods" id="nt-moods" role="radiogroup" aria-label="How was your day?"></div>
           <div class="nt-tools">
             <button type="button" class="btn sm mic-btn" id="nt-mic" aria-pressed="false"><svg class="ic"><use href="#i-mic"/></svg><span>Speak</span></button>
+            <select id="nt-voice" aria-label="Voice mode" title="Smart voice: the AI adds punctuation after you stop. Live voice: text appears instantly."><option value="smart">Smart voice (AI punctuation)</option><option value="live">Live voice (instant)</option></select>
             <select id="nt-lang" aria-label="Speaking language"><option value="en-NG">English (Nigeria)</option><option value="en-GB">English (UK)</option><option value="en-US">English (US)</option><option value="fr-FR">Français</option></select>
             <span class="grow"></span>
             <button type="button" class="btn sm ai-btn" data-ai-note="polish" title="Fix punctuation and grammar"><svg class="ic"><use href="#i-sparkle"/></svg> Tidy up</button>
             <button type="button" class="btn sm ai-btn" data-ai-note="summarize"><svg class="ic"><use href="#i-sparkle"/></svg> Summarize</button>
             <button type="button" class="btn sm ai-btn" data-ai-note="reflect"><svg class="ic"><use href="#i-sparkle"/></svg> Reflect</button>
             <button type="button" class="btn sm ai-btn" data-ai-note="week" title="Review the last 7 days of your diary"><svg class="ic"><use href="#i-sparkle"/></svg> Weekly review</button>
-            <label class="mini-check" title="After you stop speaking, the AI fixes punctuation and repeated words"><input type="checkbox" id="nt-auto"> Auto-tidy my speech</label>
+            <label class="mini-check" title="After you stop speaking, your new text is cleaned up (punctuation, capitals, repeated words)"><input type="checkbox" id="nt-auto"> Auto-tidy my speech</label>
           </div>
           <p class="muted small nt-hint" id="nt-hint" hidden>Listening… say “full stop”, “comma”, “new line” or “new paragraph” to format as you speak.</p>
           <input id="nt-title" class="nt-title" type="text" maxlength="150" placeholder="Title (optional)" aria-label="Entry title">
           <textarea id="nt-body" class="paper" placeholder="Dear diary…" aria-label="Diary entry"></textarea>
           <div class="ai-out" id="nt-ai" hidden><div class="ai-out-head"><b><svg class="ic"><use href="#i-sparkle"/></svg> <span id="nt-ai-title">AI</span></b><button class="round-btn flat" id="nt-ai-x" aria-label="Close"><svg class="ic"><use href="#i-x"/></svg></button></div>
-            <div id="nt-ai-text" class="ai-text"></div><div class="ai-actions"><button class="btn primary sm" id="nt-ai-replace" hidden>Replace my entry</button><button class="btn sm" id="nt-ai-append">Add to entry</button></div></div>
+            <div id="nt-ai-text" class="ai-text"></div><p class="muted small" id="nt-ai-note" hidden></p><div class="ai-actions"><button class="btn primary sm" id="nt-ai-replace" hidden>Replace my entry</button><button class="btn sm" id="nt-ai-append">Add to entry</button></div></div>
           <div class="ne-foot"><span id="nt-status" class="muted small">Ready</span><span id="nt-count" class="muted small"></span></div>
         </article>
         <div class="notes-empty" id="nt-empty"><div class="orn" aria-hidden="true"><span>&#10086;</span></div><h2>Open a page of your diary</h2><p class="muted">Choose an entry on the left, or begin a new one.</p>
@@ -184,14 +198,18 @@
             <button class="menu-row" id="m-test"><span class="mi"><svg class="ic"><use href="#i-volume"/></svg></span><span>Test alarm sound</span><svg class="ic chev"><use href="#i-chevr"/></svg></button>
             <button class="menu-row" id="m-notify"><span class="mi"><svg class="ic"><use href="#i-bell"/></svg></span><span>Enable desktop &amp; phone notifications</span><svg class="ic chev"><use href="#i-chevr"/></svg></button>
             <label class="menu-row static"><span class="mi"><svg class="ic"><use href="#i-table"/></svg></span><span>Timetable reminders (30 min, 5 min, start)</span><input type="checkbox" id="tt-alerts-on" class="switch" aria-label="Timetable reminders"></label>
-            <div class="menu-row static"><span class="mi"><svg class="ic"><use href="#i-volume"/></svg></span><span>Default alarm sound</span><select id="def-sound" aria-label="Default alarm sound"><option value="classic">Classic</option><option value="digital">Digital beep</option><option value="phone">Phone ringtone</option><option value="rooster">Rooster</option></select></div>
+            <div class="menu-row static"><span class="mi"><svg class="ic"><use href="#i-volume"/></svg></span><span>Default alarm tone</span><select id="def-sound" aria-label="Default alarm tone"></select><button class="btn sm" id="def-preview" type="button" aria-label="Play this tone"><svg class="ic"><use href="#i-play"/></svg></button></div>
+            <label class="menu-row static"><span class="mi"><svg class="ic"><use href="#i-volume"/></svg></span><span>Alarm volume</span><input type="range" id="alarm-vol" min="20" max="100" step="5" aria-label="Alarm volume"></label>
+            <div class="menu-row static"><span class="mi"><svg class="ic"><use href="#i-bell"/></svg></span><span>Vibration</span><select id="vib-pat" aria-label="Vibration pattern"><option value="long">Long</option><option value="short">Short</option><option value="heartbeat">Heartbeat</option><option value="buzzy">Buzzy</option><option value="sos">SOS</option></select><button class="btn sm" id="vib-test" type="button">Test</button><input type="checkbox" id="vib-on" class="switch" aria-label="Vibration on"></div>
+            <label class="menu-row static"><span class="mi"><svg class="ic"><use href="#i-mic"/></svg></span><span>Hands-free: say “Hey Do it”</span><input type="checkbox" id="hf-on" class="switch" aria-label="Hands-free wake phrase"></label>
+            <label class="menu-row static"><span class="mi"><svg class="ic"><use href="#i-volume"/></svg></span><span>Assistant speaks its replies</span><input type="checkbox" id="speak-on" class="switch" aria-label="Assistant speaks replies"></label>
           </div>
           <div class="sec-head"><h2>Email &amp; recovery</h2></div>
           <div class="card email-card">
             <div class="field"><label for="nm-input">Your name</label><div class="sound-row"><input id="nm-input" type="text" maxlength="80" autocomplete="name" placeholder="Your full name"><button class="btn primary sm" id="nm-save" type="button">Save</button></div></div>
             <p class="muted small" id="em-status"></p>
             <div class="field"><label for="em-input">Email address</label><div class="sound-row"><input id="em-input" type="text" inputmode="email" autocomplete="email" placeholder="you@example.com"><button class="btn primary sm" id="em-save" type="button">Save</button></div></div>
-            <div class="em-actions"><button class="btn sm" id="em-resend" type="button" hidden>Resend confirmation</button><button class="btn sm" id="em-test" type="button"><svg class="ic"><use href="#i-mail"/></svg> Send test email</button></div>
+            <div class="em-actions"><button class="btn sm" id="em-resend" type="button" hidden>Resend confirmation</button><button class="btn sm" id="em-check" type="button"><svg class="ic"><use href="#i-bell"/></svg> Check my email reminders</button><button class="btn sm" id="em-test" type="button"><svg class="ic"><use href="#i-mail"/></svg> Send test email</button></div>
             <label class="menu-row static"><span class="mi"><svg class="ic"><use href="#i-bell"/></svg></span><span>Email me task &amp; timetable reminders</span><input type="checkbox" id="em-rem" class="switch" aria-label="Email reminders"></label>
             <label class="menu-row static"><span class="mi"><svg class="ic"><use href="#i-sun"/></svg></span><span>Morning summary email (about 7 am)</span><input type="checkbox" id="em-dig" class="switch" aria-label="Morning summary"></label>
           </div>
@@ -268,6 +286,10 @@
 <dialog id="ai-dlg" aria-labelledby="ai-h" class="ai-dlg">
   <div class="grab" aria-hidden="true"></div>
   <div class="ed-head"><h2 id="ai-h"><svg class="ic"><use href="#i-sparkle"/></svg> Do.iT Assistant</h2><button type="button" class="round-btn" data-close aria-label="Close"><svg class="ic"><use href="#i-x"/></svg></button></div>
+  <div class="ai-tools"><button class="btn primary sm" id="ai-talk" type="button"><svg class="ic"><use href="#i-mic"/></svg> <span>Talk to me</span></button>
+    <label class="mini-check"><input type="checkbox" id="ai-speak"> Speak replies</label>
+    <label class="mini-check" title="When on, the assistant does what you ask straight away instead of showing buttons"><input type="checkbox" id="ai-auto"> Do actions for me</label></div>
+  <div class="voice-status" id="ai-voice-status" hidden><span class="orb"></span><b id="ai-vs-text">Listening…</b><small>Say “stop” to end</small></div>
   <div class="ai-chips" id="ai-chips"></div>
   <div class="ai-log" id="ai-log" aria-live="polite"></div>
   <form class="ai-form" id="ai-form" autocomplete="off">

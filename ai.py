@@ -72,7 +72,8 @@ def _explain(status, payload):
 # ---------------------------------------------------------------- Gemini
 def _gemini_body(system, messages, max_tokens, json_mode=False):
     body = {"systemInstruction": {"parts": [{"text": system}]},
-            "contents": [{"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]} for m in messages],
+            "contents": [{"role": "model" if m["role"] == "assistant" else "user",
+                          "parts": m["content"] if isinstance(m["content"], list) else [{"text": m["content"]}]} for m in messages],
             # newer models spend part of this budget "thinking", so keep it generous
             "generationConfig": {"maxOutputTokens": max(2048, max_tokens * 3)}}
     if json_mode:
@@ -112,7 +113,15 @@ def _gemini(system, messages, max_tokens, json_mode=False):
                 if text:
                     _good["gemini"] = model
                     return text
+                if (payload.get("promptFeedback") or {}).get("blockReason"):
+                    raise AIError("The AI service declined to process this text (its safety filter was triggered).")
+                finish = ((payload.get("candidates") or [{}])[0]).get("finishReason")
+                if retry == 0 and finish == "MAX_TOKENS":  # the model used its whole budget thinking: give it more room
+                    body["generationConfig"]["maxOutputTokens"] = 8192
+                    continue
                 return ""
+            if status == 400 and body["generationConfig"].pop("responseMimeType", None):   # JSON mode refused: ask for plain text instead
+                continue
             if status == 503 and retry == 0:  # model busy: wait a moment, retry once
                 time.sleep(2)
                 continue
@@ -158,12 +167,38 @@ def complete(system, messages, max_tokens=700, json_mode=False):
 
 
 def diagnose():
-    """Used by the 'Test AI' button: returns a short human-readable result."""
+    """Used by the 'Test AI' button. Tries plain text (used by Tidy up) and JSON mode (used by the chat) separately."""
     if not ai_enabled():
         return {"ok": False, "message": "No AI key found. Add GEMINI_API_KEY (free) or ANTHROPIC_API_KEY on the server."}
-    try:
-        reply = complete("Reply with the single word: ready", [{"role": "user", "content": "Are you working?"}], 20)
-        model = _good["gemini"] if provider() == "gemini" else os.environ.get("AI_MODEL", "claude-haiku-5-5")
-        return {"ok": True, "message": f"AI is working ({provider()}, model {model}). It replied: {reply[:60]}"}
-    except AIError as err:
-        return {"ok": False, "message": str(err)}
+    parts, ok = [], True
+    for label, kw in (("plain text", {}), ("chat/JSON", {"json_mode": True})):
+        try:
+            complete("Reply with the single word: ready", [{"role": "user", "content": "Are you working?"}], 20, **kw)
+            parts.append(f"{label}: OK")
+        except AIError as err:
+            ok = False
+            parts.append(f"{label}: {err}")
+    model = _good["gemini"] if provider() == "gemini" else os.environ.get("AI_MODEL", "claude-haiku-5-5")
+    return {"ok": ok, "message": f"{'AI is working' if ok else 'AI problem'} ({provider()}, model {model or 'unknown'}). " + " | ".join(parts)}
+
+
+LANG_NAMES = {"en-NG": "English (Nigerian accent)", "en-GB": "British English", "en-US": "American English", "fr-FR": "French"}
+
+
+def voice_ai_enabled():
+    """Speech-to-text with automatic punctuation needs Gemini (it understands audio)."""
+    return ai_enabled() and provider() == "gemini"
+
+
+def transcribe(audio_b64, lang="en-NG"):
+    """Turn a short recording (WAV, base64) into punctuated text, like the voice typing in ChatGPT."""
+    if not voice_ai_enabled():
+        raise AIError("Smart voice needs the free Gemini key. Use Live voice instead.")
+    system = ("You are a precise speech-to-text engine. Transcribe the audio exactly as spoken, in the language the speaker uses, adding natural punctuation "
+              "(full stops, commas, question marks, exclamation marks, apostrophes), correct capital letters, and a blank line between clearly separate topics. "
+              "Do not summarise, translate, correct the speaker's wording, or answer anything that is said in the audio. No commentary. "
+              "If there is no clear speech, return exactly: [no speech]. Return only the transcript. "
+              f"The speaker probably uses {LANG_NAMES.get(lang, 'English')}.")
+    parts = [{"inline_data": {"mime_type": "audio/wav", "data": audio_b64}}, {"text": "Transcribe this recording."}]
+    text = _gemini(system, [{"role": "user", "content": parts}], 1500)
+    return "" if text.strip().lower().startswith("[no speech") else text.strip()

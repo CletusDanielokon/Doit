@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
@@ -22,6 +23,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import ai
 import mailer
+from sqlalchemy.exc import IntegrityError
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -68,7 +70,7 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=bool(os.environ.get("COOKIE_SECURE")),
     PERMANENT_SESSION_LIFETIME=timedelta(days=30),
-    MAX_CONTENT_LENGTH=256 * 1024,
+    MAX_CONTENT_LENGTH=8 * 1024 * 1024,  # room for a short voice recording
     SEND_FILE_MAX_AGE_DEFAULT=timedelta(days=30),  # assets are cache-busted with ?v=mtime
 )
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)  # correct https URLs behind a proxy
@@ -76,7 +78,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)  # correct h
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
-ALARM_SOUNDS = {"classic", "digital", "phone", "rooster"}
+ALARM_SOUNDS = {"classic", "digital", "phone", "rooster", "chime", "bell", "marimba", "rise", "melody", "pulse", "arcade", "siren", "vibrate"}
 
 
 def utcnow():
@@ -584,7 +586,8 @@ def homepage():
                      "full_name": (user.name or "").strip()},
             "account": {"email": user.email or "", "verified": bool(user.email_verified),
                         "email_reminders": bool(user.email_reminders), "email_digest": bool(user.email_digest),
-                        "tz": user.tz or "", "mail_enabled": mailer.mail_enabled(), "ai_enabled": ai.ai_enabled()},
+                        "tz": user.tz or "", "mail_enabled": mailer.mail_enabled(), "ai_enabled": ai.ai_enabled(),
+                        "voice_ai": ai.voice_ai_enabled()},
             "tasks": [task_json(t) for t in tasks],
             "timetable": [tt_json(e) for e in TimetableEntry.query.filter_by(user_id=user.id)
                           .order_by(TimetableEntry.day, TimetableEntry.start_min).all()],
@@ -1085,6 +1088,28 @@ def export_json():
                     headers={"Content-Disposition": "attachment; filename=do-it-my-data.json"})
 
 
+@app.route("/api/ai/transcribe", methods=["POST"])
+@api_login_required
+def api_ai_transcribe(user):
+    """Smart voice: a short recording in, punctuated text out."""
+    if not ai.voice_ai_enabled():
+        raise ValidationError("Smart voice needs the free Gemini key on the server. Use Live voice instead.")
+    if not rate_ok(f"voice:{user.id}", int(os.environ.get("VOICE_HOURLY_LIMIT", "40")), 3600):
+        raise ValidationError("You have reached the hourly limit for Smart voice. Use Live voice for now.")
+    data = request.get_json(silent=True) or {}
+    audio = str(data.get("audio", ""))
+    if len(audio) < 2000:
+        raise ValidationError("The recording was too short.")
+    if len(audio) > 7_000_000:
+        raise ValidationError("The recording was too long. Please keep it under about 90 seconds.")
+    try:
+        text = ai.transcribe(audio, str(data.get("lang", "en-NG")))
+    except ai.AIError as err:
+        app.logger.warning("Transcription failed: %s", err)
+        raise ValidationError(str(err))
+    return jsonify(text=text)
+
+
 @app.route("/api/ai/status", methods=["POST"])
 @api_login_required
 def api_ai_status(user):
@@ -1141,58 +1166,101 @@ def _fmt(dt):
     return dt.strftime("%I:%M %p").lstrip("0")
 
 
-def _already(user, key):
-    return EmailLog.query.filter_by(user_id=user.id, key=key).first() is not None
+REMIND_WINDOW_MIN = int(os.environ.get("REMIND_WINDOW", "60"))  # a reminder missed by more than this is not sent late
 
 
-def run_email_reminders():
-    now_utc = datetime.now(timezone.utc)
+def task_notify_time(t):
+    """When a task should email its owner: its alarm time, otherwise its due time (if a time of day was set)."""
+    if t.reminder_datetime:
+        return t.reminder_datetime
+    if t.due_date and t.due_has_time:
+        return t.due_date
+    return None
+
+
+def collect_due_items(tasks, entries, local, window=REMIND_WINDOW_MIN):
+    """What should be emailed right now? Returns [(unique_key, text)]. Pure function, so it is easy to test."""
+    items = []
+    for t in tasks:
+        at = task_notify_time(t)
+        if t.completed_at is None and at and local - timedelta(minutes=window) < at <= local:
+            items.append((f"task-{t.id}-{at:%Y%m%d%H%M}", f"Task: {t.task}" + (f" (due {_fmt(t.due_date)})" if t.due_date and t.due_has_time else "")))
+    now_min = local.hour * 60 + local.minute
+    for e in entries:
+        if e.alerts and e.day == local.weekday() and 0 <= e.start_min - now_min <= 30:
+            start = local.replace(hour=e.start_min // 60, minute=e.start_min % 60, second=0, microsecond=0)
+            items.append((f"tt-{e.id}-{local:%Y%m%d}", f"Timetable: {e.title} at {_fmt(start)}" + (f" ({e.location})" if e.location else "")))
+    return items
+
+
+def collect_digest(tasks, entries, local):
+    lines = [f"{_fmt(local.replace(hour=e.start_min // 60, minute=e.start_min % 60))}  {e.title}" + (f" ({e.location})" if e.location else "")
+             for e in sorted((e for e in entries if e.day == local.weekday()), key=lambda e: e.start_min)]
+    for t in tasks:
+        if t.completed_at is None and t.due_date and t.due_date.date() <= local.date():
+            lines.append(("Overdue: " if t.due_date.date() < local.date() else "Today: ") + t.task)
+    return lines
+
+
+def claim_keys(user, keys):
+    """Write 'already sent' markers first. The unique constraint means two workers can never both send the same reminder."""
+    got = []
+    for key in keys:
+        try:
+            db.session.add(EmailLog(user_id=user.id, key=key))
+            db.session.commit()
+            got.append(key)
+        except IntegrityError:
+            db.session.rollback()
+    return got
+
+
+def release_keys(user, keys):
+    if keys:
+        EmailLog.query.filter(EmailLog.user_id == user.id, EmailLog.key.in_(keys)).delete(synchronize_session=False)
+        db.session.commit()
+
+
+def user_local_now(user):
+    return datetime.now(timezone.utc).astimezone(user_zone(user)).replace(tzinfo=None)
+
+
+def run_email_reminders(only_user=None):
+    """Send due reminder emails. Returns (emails_sent, [problems])."""
     digest_hour = int(os.environ.get("DIGEST_HOUR", "7"))
-    sent = 0
+    sent, errors = 0, []
     EmailLog.query.filter(EmailLog.sent_at < utcnow() - timedelta(days=14)).delete()
-    users = User.query.filter(User.email.isnot(None), User.email_verified.is_(True)).all()
-    for user in users:
-        local = now_utc.astimezone(user_zone(user)).replace(tzinfo=None)
-        app_link = f"{site_url()}{url_for('homepage')}"
-        keys, lines = [], []
-        if user.email_reminders:
-            for t in Task.query.filter(Task.user_id == user.id, Task.completed_at.is_(None),
-                                       Task.reminder_datetime.isnot(None), Task.reminder_datetime <= local,
-                                       Task.reminder_datetime > local - timedelta(minutes=30)).all():
-                key = f"task-{t.id}-{t.reminder_datetime:%Y%m%d%H%M}"
-                if not _already(user, key):
-                    keys.append(key)
-                    lines.append(f"Task: {t.task}" + (f" (due {_fmt(t.due_date)})" if t.due_date and t.due_has_time else ""))
-            now_min = local.hour * 60 + local.minute
-            for e in TimetableEntry.query.filter_by(user_id=user.id, day=local.weekday(), alerts=True).all():
-                if 0 <= e.start_min - now_min <= 30:
-                    key = f"tt-{e.id}-{local:%Y%m%d}"
-                    if not _already(user, key):
-                        keys.append(key)
-                        start = local.replace(hour=e.start_min // 60, minute=e.start_min % 60)
-                        lines.append(f"Timetable: {e.title} at {_fmt(start)}" + (f" ({e.location})" if e.location else ""))
-        if lines:
-            subject = "Reminder: " + lines[0].split(": ", 1)[1].split(" (")[0] + (f" (+{len(lines) - 1} more)" if len(lines) > 1 else "")
-            if not try_send(user.email, subject, "Coming up", f"Hi {user.display_name}, here is what needs your attention:", lines,
-                            ("Open Do.iT", app_link), "You can turn these emails off in Profile."):
-                db.session.add_all(EmailLog(user_id=user.id, key=k) for k in keys)
-                db.session.commit()
-                sent += 1
-        if user.email_digest and digest_hour <= local.hour < 12:
-            dkey = f"digest-{local:%Y%m%d}"
-            if not _already(user, dkey):
-                items = [f"{_fmt(local.replace(hour=e.start_min // 60, minute=e.start_min % 60))}  {e.title}" + (f" ({e.location})" if e.location else "")
-                         for e in TimetableEntry.query.filter_by(user_id=user.id, day=local.weekday()).order_by(TimetableEntry.start_min).all()]
-                tasks = Task.query.filter(Task.user_id == user.id, Task.completed_at.is_(None), Task.due_date.isnot(None),
-                                          Task.due_date < datetime.combine(local.date() + timedelta(days=1), datetime.min.time())).all()
-                items += [("Overdue: " if t.due_date.date() < local.date() else "Task: ") + t.task for t in tasks]
-                if items and not try_send(user.email, "Your day on Do.iT", f"Good morning, {user.display_name}", "Here is your plan for today:", items,
-                                          ("Open my day", app_link), "Turn off the morning summary in Profile."):
-                    db.session.add(EmailLog(user_id=user.id, key=dkey))
-                    db.session.commit()
-                    sent += 1
     db.session.commit()
-    return sent
+    users = [only_user] if only_user else User.query.filter(User.email.isnot(None), User.email_verified.is_(True)).all()
+    for user in users:
+        local = user_local_now(user)
+        link = f"{site_url()}{url_for('homepage')}"
+        tasks = Task.query.filter(Task.user_id == user.id, Task.completed_at.is_(None)).all()
+        entries = TimetableEntry.query.filter_by(user_id=user.id).all()
+        if user.email_reminders:
+            items = collect_due_items(tasks, [e for e in entries if e.alerts], local)
+            won = claim_keys(user, [k for k, _ in items])
+            lines = [text for k, text in items if k in won]
+            if lines:
+                subject = "Reminder: " + lines[0].split(": ", 1)[1].split(" (")[0].split(" at ")[0] + (f" (+{len(lines) - 1} more)" if len(lines) > 1 else "")
+                err = try_send(user.email, subject, "Coming up", f"Hi {user.display_name}, here is what needs your attention:", lines,
+                               ("Open Do.iT", link), "You can turn these emails off in Profile.")
+                if err:
+                    release_keys(user, won)  # allow a retry on the next run
+                    errors.append(f"{user.username}: {err}")
+                else:
+                    sent += 1
+        if user.email_digest and digest_hour <= local.hour < 12:
+            lines = collect_digest(tasks, entries, local)
+            if lines and claim_keys(user, [f"digest-{local:%Y%m%d}"]):
+                err = try_send(user.email, "Your day on Do.iT", f"Good morning, {user.display_name}", "Here is your plan for today:", lines,
+                               ("Open my day", link), "Turn off the morning summary in Profile.")
+                if err:
+                    release_keys(user, [f"digest-{local:%Y%m%d}"])
+                    errors.append(f"{user.username}: {err}")
+                else:
+                    sent += 1
+    return sent, errors
 
 
 @app.route("/api/cron/reminders")
@@ -1202,8 +1270,67 @@ def cron_reminders():
     if not secret or not secrets.compare_digest(given, secret):
         return jsonify(error="Not allowed."), 403
     if not mailer.mail_enabled():
-        return jsonify(error="Email is not set up."), 503
-    return jsonify(ok=True, emails_sent=run_email_reminders())
+        return jsonify(error="Email is not set up (MAIL_FROM and BREVO_API_KEY are missing)."), 503
+    sent, errors = run_email_reminders()
+    return jsonify(ok=not errors, emails_sent=sent, problems=errors)
+
+
+@app.route("/api/account/reminder-check", methods=["POST"])
+@api_login_required
+def api_reminder_check(user):
+    """The 'Check my email reminders' button: says exactly why an email did or did not go out."""
+    if not mailer.mail_enabled():
+        raise ValidationError("Email is not set up on the server yet (MAIL_FROM and BREVO_API_KEY are missing).")
+    if not user.email:
+        raise ValidationError("Add your email address in Profile first.")
+    if not user.email_verified:
+        raise ValidationError("Your email is not confirmed yet, so reminders are paused. Tap 'Resend confirmation' in Profile and open the link we email you.")
+    if not user.email_reminders:
+        raise ValidationError("Email reminders are switched off in Profile.")
+    if not rate_ok(f"remcheck:{user.id}", 6, 600):
+        raise ValidationError("Please wait a few minutes before checking again.")
+    sent, errors = run_email_reminders(only_user=user)
+    zone = user.tz or f"not saved yet, using {os.environ.get('DEFAULT_TZ', 'UTC')}"
+    if errors:
+        raise ValidationError("The email could not be sent: " + errors[0][:200])
+    if sent:
+        return jsonify(ok=True, message=f"Sent {sent} reminder email{'s' if sent > 1 else ''}. Check your inbox and spam folder.")
+    local = user_local_now(user)
+    upcoming = sorted(((task_notify_time(t), t.task) for t in Task.query.filter(Task.user_id == user.id, Task.completed_at.is_(None)).all()
+                       if task_notify_time(t) and task_notify_time(t) > local), key=lambda x: x[0])
+    if upcoming:
+        when, title = upcoming[0]
+        return jsonify(ok=True, message=f"Nothing is due this minute. Next email: “{title}” at {when:%a %d %b, %I:%M %p} (your timezone: {zone}).")
+    return jsonify(ok=True, message="No task has an alarm or a due time coming up, so no email is scheduled. Add an alarm or a due time to a task. "
+                                    f"(your timezone: {zone})")
+
+
+_scheduler_started = False
+
+
+def _scheduler_loop():
+    time.sleep(20)
+    while True:
+        try:
+            with app.test_request_context(os.environ.get("SITE_URL") or "http://localhost:5000/"):
+                sent, errors = run_email_reminders()
+                if errors:
+                    app.logger.warning("Reminder emails had problems: %s", errors)
+        except Exception:  # never let the background loop die
+            app.logger.exception("Reminder run failed")
+        time.sleep(60)
+
+
+def start_scheduler():
+    """Checks for due reminders every minute while the app is running. A free cron service also calls
+    /api/cron/reminders so the sleeping free Render app is woken up; duplicates are impossible (see claim_keys)."""
+    global _scheduler_started
+    if _scheduler_started or os.environ.get("EMAIL_SCHEDULER", "1") == "0" or not mailer.mail_enabled():
+        return
+    if os.environ.get("FLASK_DEBUG") in ("1", "true", "True") and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+        return  # the auto-reloader's parent process: only the child should run the loop
+    _scheduler_started = True
+    threading.Thread(target=_scheduler_loop, daemon=True, name="email-reminders").start()
 
 
 # --------------------------------------------------------------------------
@@ -1220,6 +1347,7 @@ def ai_call(system, messages, max_tokens=700, json_mode=False):
     try:
         return ai.complete(system, messages, max_tokens, json_mode)
     except ai.AIError as err:
+        app.logger.warning("AI request failed: %s", err)  # visible in the Render logs
         raise ValidationError(str(err))
 
 
@@ -1243,19 +1371,20 @@ def free_windows(entries, now_min, day_end=22 * 60, min_len=30):
 
 
 def clean_actions(raw):
-    """Check the actions the AI proposed. The user still has to tap to add each one."""
+    """Check the actions the AI proposed before the browser runs them."""
     out = []
-    for a in (raw or [])[:6]:
+    for a in (raw or [])[:8]:
         if not isinstance(a, dict):
             continue
+        kind = a.get("type")
         title = re.sub(r"\s+", " ", str(a.get("title", "")).strip())
-        if a.get("type") == "add_task" and title:
+        if kind == "add_task" and title:
             due = a.get("due") if parse_dt(a.get("due"), "%Y-%m-%d") else ""
             tm = a.get("time") if due and re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(a.get("time") or "")) else ""
             out.append({"type": "add_task", "title": title[:255], "due": due, "time": tm,
                         "priority": a.get("priority") if a.get("priority") in ("low", "medium", "high") else "medium",
                         "tags": [str(t).strip()[:24] for t in (a.get("tags") or []) if str(t).strip()][:5]})
-        elif a.get("type") == "add_timetable" and title:
+        elif kind == "add_timetable" and title:
             days = sorted({d for d in (a.get("days") or []) if isinstance(d, int) and 0 <= d <= 6})
             try:
                 start, end = minutes_of(a.get("start")), minutes_of(a.get("end"))
@@ -1263,6 +1392,15 @@ def clean_actions(raw):
                 continue
             if days and end > start:
                 out.append({"type": "add_timetable", "title": title[:120], "days": days, "start": _hm(start), "end": _hm(end)})
+        elif kind == "complete_task" and (isinstance(a.get("id"), int) or title):
+            out.append({"type": "complete_task", "id": a.get("id") if isinstance(a.get("id"), int) else 0, "title": title[:255]})
+        elif kind == "add_note" and str(a.get("text", "")).strip():
+            out.append({"type": "add_note", "text": str(a["text"]).strip()[:2000]})
+        elif kind == "start_focus":
+            minutes = a.get("minutes") if isinstance(a.get("minutes"), int) else 25
+            out.append({"type": "start_focus", "minutes": max(1, min(minutes, 120))})
+        elif kind == "open" and a.get("tab") in ("home", "tasks", "timetable", "notes", "me"):
+            out.append({"type": "open", "tab": a["tab"]})
     return out
 
 
@@ -1293,29 +1431,49 @@ def api_ai_chat(user):
     today_entries = [e for e in week if e.day == now.weekday()]
     context = {
         "now": now.strftime("%A %d %B %Y, %H:%M"), "today_is_day_number": now.weekday(),
-        "pending_tasks": [{"title": t.task, "due": iso(t.due_date) if t.due_date else None,
+        "pending_tasks": [{"id": t.id, "title": t.task, "due": iso(t.due_date) if t.due_date else None,
                            "overdue": bool(t.due_date and (t.due_date < now if t.due_has_time else t.due_date.date() < now.date())),
                            "priority": (t.priority or TaskPriority.MEDIUM).value, "tags": split_tags(t.tags),
                            "steps_left": sum(1 for s in t.subtasks if not s.done)} for t in tasks],
         "weekly_timetable": [{"day": DAY_NAMES[e.day], "from": _hm(e.start_min), "to": _hm(e.end_min), "title": e.title} for e in week],
         "free_time_left_today": free_windows(today_entries, now_min)}
+    voice = bool(data.get("voice"))
     system = (
-        f"You are Do.iT Assistant, a sharp, warm productivity coach inside a to-do, timetable and diary app. You are talking to {user.display_name}.\n"
+        f"You are Do.iT Assistant, a sharp, warm productivity assistant inside a to-do, timetable and diary app. You are talking to {user.display_name}.\n"
         "RULES:\n"
         "- Use ONLY the live data below. Refer to real task and class names. Never invent tasks, classes or times that are not in the data.\n"
         "- When asked to plan, give a short time-blocked schedule that respects the timetable and the free windows. Put urgent and overdue work first.\n"
         "- Be concrete and brief (under 170 words unless asked for more). If the request is unclear, ask ONE short question.\n"
         "- Write in the same language the user writes in. Plain text only: no markdown symbols, use short lines starting with a dash.\n"
-        "- You cannot change anything yourself. When the user asks you to add, schedule or plan something concrete, you may PROPOSE actions; the user taps to confirm.\n"
-        'REPLY FORMAT: return ONLY a JSON object: {"reply": "your message", "actions": []}.\n'
-        'Action shapes: {"type":"add_task","title":"...","due":"YYYY-MM-DD or null","time":"HH:MM or null","priority":"low|medium|high","tags":["..."]} and '
-        '{"type":"add_timetable","title":"...","days":[0=Monday ... 6=Sunday],"start":"HH:MM","end":"HH:MM"}. Use at most 6 actions, and an empty list when none are needed.\n'
+        "- When the user asks you to DO something (add a task, set an alarm or reminder, schedule a class, finish a task, write in the diary, start the focus timer, open a page), "
+        "do it by returning actions. Relative dates such as tomorrow or Friday must be turned into real dates using 'now' in the live data. "
+        "'Remind me' or 'set an alarm' means an add_task action with a due date and time.\n"
+        + ("- The user is SPEAKING to you and will hear your 'speech' text read aloud. Keep 'speech' to one or two short, natural sentences with no lists, symbols or emojis, "
+           "and say what you did, for example 'Done. I added Buy rice for tomorrow at five p m.'\n" if voice else "") +
+        'REPLY FORMAT: return ONLY a JSON object: {"reply": "your message", "speech": "short spoken version", "actions": []}.\n'
+        'Action shapes: {"type":"add_task","title":"...","due":"YYYY-MM-DD or null","time":"HH:MM or null","priority":"low|medium|high","tags":["..."]}; '
+        '{"type":"add_timetable","title":"...","days":[0=Monday ... 6=Sunday],"start":"HH:MM","end":"HH:MM"}; '
+        '{"type":"complete_task","id":<id from pending_tasks>,"title":"..."}; {"type":"add_note","text":"text to add to today\'s diary"}; '
+        '{"type":"start_focus","minutes":25}; {"type":"open","tab":"home|tasks|timetable|notes|me"}. Use an empty actions list when nothing needs doing.\n'
         "LIVE DATA:\n" + json.dumps(context, ensure_ascii=False))
     raw = ai_call(system, msgs, 700, json_mode=True)
     parsed = try_json(raw)
     if parsed and isinstance(parsed.get("reply"), str) and parsed["reply"].strip():
-        return jsonify(reply=parsed["reply"].strip(), actions=clean_actions(parsed.get("actions")))
-    return jsonify(reply=raw, actions=[])
+        reply = parsed["reply"].strip()
+        speech = str(parsed.get("speech") or "").strip()[:400] or reply[:300]
+        return jsonify(reply=reply, speech=speech, actions=clean_actions(parsed.get("actions")))
+    return jsonify(reply=raw, speech=raw[:300], actions=[])
+
+
+def clean_ai_text(text):
+    """Remove things models sometimes add around the answer: code fences, quotes, 'Here is the corrected text:'."""
+    t = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text.strip()).strip()
+    lines = t.split("\n")
+    if len(lines) > 1 and re.match(r"(?i)^(here|sure|certainly|of course)\b.*:\s*$", lines[0].strip()):
+        t = "\n".join(lines[1:]).strip()
+    if len(t) > 1 and t[0] in "\"“" and t[-1] in "\"”":
+        t = t[1:-1].strip()
+    return t
 
 
 def _parse_json(text):
@@ -1363,12 +1521,13 @@ def api_ai_note(user):
         raise ValidationError("Write something first.")
     prompts = {
         "week": "You are a kind journaling coach. Read this week of diary entries and reply, in the same language, with three short parts: 'Highlights' (2 bullets), 'Patterns I notice' (2 bullets about mood, energy or habits) and 'One thing to try next week' (1 sentence). Be warm and specific, under 150 words, plain text with dashes.",
-        "polish": "The text was probably typed by voice, so fix spelling, grammar and punctuation, split run-on speech into sentences and paragraphs, and remove words or whole sentences that are accidentally repeated by the speech recognition (the same phrase twice in a row). Keep the author's words, voice, meaning and language. Return ONLY the corrected text.",
+        "polish": "The text was probably dictated by voice, so it may have NO punctuation at all. Add all the missing punctuation: full stops at the end of every sentence, commas, question marks, exclamation marks, apostrophes and quotation marks where needed. Capitalise the start of every sentence and the word I, split run-on speech into proper sentences and short paragraphs, fix spelling and grammar, and remove words or sentences that were accidentally repeated by the speech recognition. Keep the author's own words, voice, meaning and language. Return ONLY the corrected text.",
         "summarize": "Summarize this diary entry in 2 to 3 warm, plain sentences, in the same language. Return ONLY the summary.",
         "reflect": "Read this diary entry and offer three gentle reflection questions that could help the writer think about their day. Use a short numbered list, in the same language. Return ONLY the questions."}
     if action not in prompts:
         raise ValidationError("Unknown action.")
-    return jsonify(text=ai_call(prompts[action], [{"role": "user", "content": text}], 1500))
+    answer = ai_call(prompts[action], [{"role": "user", "content": text}], 1500)
+    return jsonify(text=clean_ai_text(answer) if action == "polish" else answer)
 
 
 # --------------------------------------------------------------------------
@@ -1448,6 +1607,9 @@ def export_csv():
                                         for s in t.subtasks))])
     return Response(out.getvalue(), mimetype="text/csv",
                     headers={"Content-Disposition": "attachment; filename=do-it-tasks.csv"})
+
+
+start_scheduler()
 
 
 if __name__ == "__main__":
