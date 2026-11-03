@@ -1436,7 +1436,9 @@ def api_ai_chat(user):
                            "priority": (t.priority or TaskPriority.MEDIUM).value, "tags": split_tags(t.tags),
                            "steps_left": sum(1 for s in t.subtasks if not s.done)} for t in tasks],
         "weekly_timetable": [{"day": DAY_NAMES[e.day], "from": _hm(e.start_min), "to": _hm(e.end_min), "title": e.title} for e in week],
-        "free_time_left_today": free_windows(today_entries, now_min)}
+        "free_time_left_today": free_windows(today_entries, now_min),
+        "calendar": {"today": f"{now.date().isoformat()} ({DAY_NAMES[now.weekday()]})", "tomorrow": (now.date() + timedelta(days=1)).isoformat(),
+                     "next_date_of_each_weekday": {DAY_NAMES[i]: (now.date() + timedelta(days=((i - now.weekday()) % 7 or 7))).isoformat() for i in range(7)}}}
     voice = bool(data.get("voice"))
     system = (
         f"You are Do.iT Assistant, a sharp, warm productivity assistant inside a to-do, timetable and diary app. You are talking to {user.display_name}.\n"
@@ -1446,8 +1448,9 @@ def api_ai_chat(user):
         "- Be concrete and brief (under 170 words unless asked for more). If the request is unclear, ask ONE short question.\n"
         "- Write in the same language the user writes in. Plain text only: no markdown symbols, use short lines starting with a dash.\n"
         "- When the user asks you to DO something (add a task, set an alarm or reminder, schedule a class, finish a task, write in the diary, start the focus timer, open a page), "
-        "do it by returning actions. Relative dates such as tomorrow or Friday must be turned into real dates using 'now' in the live data. "
-        "'Remind me' or 'set an alarm' means an add_task action with a due date and time.\n"
+        "you MUST do it by returning the matching action. NEVER say or imply that you did something unless that action is in your actions list. "
+        "Turn relative dates such as tomorrow or Friday into real dates using the 'calendar' facts in the live data. "
+        "'Remind me' or 'set an alarm' means an add_task action with a due date and a time in 24-hour HH:MM.\n"
         + ("- The user is SPEAKING to you and will hear your 'speech' text read aloud. Keep 'speech' to one or two short, natural sentences with no lists, symbols or emojis, "
            "and say what you did, for example 'Done. I added Buy rice for tomorrow at five p m.'\n" if voice else "") +
         'REPLY FORMAT: return ONLY a JSON object: {"reply": "your message", "speech": "short spoken version", "actions": []}.\n'
@@ -1455,9 +1458,16 @@ def api_ai_chat(user):
         '{"type":"add_timetable","title":"...","days":[0=Monday ... 6=Sunday],"start":"HH:MM","end":"HH:MM"}; '
         '{"type":"complete_task","id":<id from pending_tasks>,"title":"..."}; {"type":"add_note","text":"text to add to today\'s diary"}; '
         '{"type":"start_focus","minutes":25}; {"type":"open","tab":"home|tasks|timetable|notes|me"}. Use an empty actions list when nothing needs doing.\n'
+        "EXAMPLE: user says 'remind me to call Ada tomorrow at 5pm' -> "
+        + json.dumps({"reply": "Okay, I will remind you to call Ada tomorrow at 5:00 PM.", "speech": "Done. I will remind you to call Ada tomorrow at five p m.",
+                      "actions": [{"type": "add_task", "title": "Call Ada", "due": context["calendar"]["tomorrow"], "time": "17:00", "priority": "medium", "tags": []}]}) + "\n"
         "LIVE DATA:\n" + json.dumps(context, ensure_ascii=False))
     raw = ai_call(system, msgs, 700, json_mode=True)
     parsed = try_json(raw)
+    if not (parsed and isinstance(parsed.get("reply"), str) and parsed["reply"].strip()):  # the model ignored the format: ask once more
+        raw = ai_call(system, msgs + [{"role": "assistant", "content": raw[:1500]},
+                                      {"role": "user", "content": "Reply again as ONLY the JSON object described in REPLY FORMAT. No other text."}], 700, json_mode=True)
+        parsed = try_json(raw)
     if parsed and isinstance(parsed.get("reply"), str) and parsed["reply"].strip():
         reply = parsed["reply"].strip()
         speech = str(parsed.get("speech") or "").strip()[:400] or reply[:300]

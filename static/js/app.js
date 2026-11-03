@@ -947,20 +947,21 @@ $('nt-ai-replace').addEventListener('click', () => { const b = $('nt-body'), t =
 $('nt-ai-append').addEventListener('click', () => { const b = $('nt-body'); b.value = (b.value.trimEnd() + '\n\n' + $('nt-ai-text').textContent).trim(); countWords(); queueSave(); $('nt-ai').hidden = true; });
 
 /* ---------- AI assistant: chat, actions, and a hands-free voice conversation ---------- */
-const aiDlg = $('ai-dlg'); let aiMode = 'chat'; const aiHist = [];
+const aiDlg = $('ai-dlg'); let aiMode = 'chat', pendingAsk = null; const aiHist = [];
 const bubble = (cls, ...kids) => { const m = h('div', { class: 'msg ' + cls }, ...kids); $('ai-log').append(m); $('ai-log').scrollTop = 1e9; return m; };
 const langCode = () => $('nt-lang').value || 'en-US';
 const speakOn = () => store.get('speakReplies', 'on') === 'on';
-function paintAiOptions() { $('ai-speak').checked = speakOn(); $('ai-auto').checked = store.get('aiAuto', 'off') === 'on'; }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function paintAiOptions() { $('ai-speak').checked = speakOn(); $('ai-auto').checked = store.get('aiAuto', 'on') === 'on'; }
 function openAI() {
-  aiDlg.showModal(); paintAiOptions(); $('ai-note').textContent = A.ai_enabled ? 'AI can make mistakes. Your task titles and today’s timetable are shared with the AI service to answer you.' : 'AI is not set up on this server yet. The site owner needs to add an API key.';
-  if (!$('ai-log').children.length) bubble('bot', `Hi ${boot.user.name}! Ask me to plan your day, or tell me what to do: “remind me to call Ada tomorrow at 5”, “add Chemistry on Monday 9 to 11”, “mark Buy rice as done”. You can also tap Talk to me and speak.`);
-  $('ai-input').focus();
+  aiDlg.showModal(); paintAiOptions(); $('ai-note').textContent = A.ai_enabled ? 'AI can make mistakes. Your task titles and today’s timetable are shared with the AI service to answer you.' : 'AI is not set up on this server, so I can only do simple commands (add tasks, mark done, read your list).';
+  if (!$('ai-log').children.length) bubble('bot', `Hi ${boot.user.name}! Tell me what to do, by typing or by tapping Talk to me. For example: “remind me to call Ada tomorrow at 5 pm”, “add Chemistry on Monday from 9 to 11”, “mark Buy rice as done”, “what is next?”`);
+  if (!matchMedia('(pointer:coarse)').matches && !V.on) $('ai-input').focus();
 }
 const AI_CHIPS = [['Plan my day', 'Plan the rest of my day hour by hour, using my timetable and tasks.'], ['Plan my week', 'Look at my timetable and tasks and help me plan my week. Suggest when to do each pending task.'],
   ['Overdue rescue', 'I have overdue or late tasks. Tell me what to do first and propose new realistic dates.'], ['Break down a goal', null],
   ['Study time', 'Find free time in my timetable this week and propose study blocks I can add.'], ['Motivate me', 'Give me a short, encouraging message to help me start my next task.']];
-$('ai-chips').replaceChildren(...AI_CHIPS.map(([l, q]) => h('button', { type: 'button', onclick: () => { if (q) sendAI(q); else { aiMode = 'goal'; $('ai-input').placeholder = 'Describe your goal, e.g. “Prepare for my chemistry exam”'; $('ai-input').focus(); bubble('bot', 'Tell me the goal and I will turn it into a checklist.'); } } }, l)));
+$('ai-chips').replaceChildren(...AI_CHIPS.map(([l, q]) => h('button', { type: 'button', onclick: () => { if (q) sendAI(q, { suggest: true }); else { aiMode = 'goal'; $('ai-input').placeholder = 'Describe your goal, e.g. “Prepare for my chemistry exam”'; $('ai-input').focus(); bubble('bot', 'Tell me the goal and I will turn it into a checklist.'); } } }, l)));
 function bestTitleMatch(list, title) {
   const w = (title || '').toLowerCase().split(/\W+/).filter((x) => x.length > 2); if (!w.length) return null; let best = null, score = 0;
   for (const t of list) { const tl = t.title.toLowerCase(), sc = w.filter((x) => tl.includes(x)).length / w.length; if (sc > score) { score = sc; best = t; } }
@@ -981,13 +982,13 @@ const ACTION_BTN = { add_task: 'Add task', add_timetable: 'Add to timetable', co
 async function applyAction(a) {   // returns true/false and leaves a short sentence in a._msg
   a._msg = '';
   if (a.type === 'add_task') {
-    const r = await api('POST', '/api/tasks', { title: a.title, priority: a.priority, tags: a.tags, due: a.due, due_time: a.time, reminder: a.due && a.time ? `${a.due}T${a.time}` : '', alarm_sound: store.get('defSound', 'classic'), recurring: 'none' }, { quiet: true });
+    const r = await api('POST', '/api/tasks', { title: a.title, priority: a.priority, tags: a.tags, due: a.due, due_time: a.time, reminder: a.due && a.time ? `${a.due}T${a.time}` : '', alarm_sound: store.get('defSound', 'classic'), recurring: a.recurring && (a.due || a.time) ? a.recurring : 'none' }, { quiet: true });
     if (r) { put(r.task); render(); a._msg = `Added task “${a.title}”` + (a.due ? ' for ' + fmtDay(parseLocal(a.due)) + (a.time ? ' at ' + fmtMin(hmToMin(a.time)) : '') : ''); return true; }
-    a._msg = 'I could not add that task'; return false;
+    a._msg = 'I could not add that task: ' + (lastError || 'please try again'); return false;
   }
   if (a.type === 'add_timetable') {
     const r = await api('POST', '/api/timetable', { title: a.title, days: a.days, start: a.start, end: a.end, color: 'blue', alerts: true }, { quiet: true });
-    if (r) { S.tt.push(...r.entries); render(); a._msg = `Added “${a.title}” to your timetable`; return true; } a._msg = 'I could not add that to the timetable'; return false;
+    if (r) { S.tt.push(...r.entries); render(); a._msg = `Added “${a.title}” to your timetable`; return true; } a._msg = 'I could not add that to the timetable: ' + (lastError || 'please try again'); return false;
   }
   if (a.type === 'complete_task') {
     const t = findOpenTask(a); if (!t) { a._msg = `I could not find “${a.title}” among your open tasks`; return false; }
@@ -1005,11 +1006,126 @@ async function applyAction(a) {   // returns true/false and leaves a short sente
 }
 const actionCard = (a) => h('div', { class: 'act-card' }, h('span', {}, actionLabel(a)),
   h('button', { class: 'btn primary sm', type: 'button', onclick: async (e) => { const b = e.currentTarget; b.disabled = true; if (await applyAction(a)) b.textContent = 'Done ✓'; else { b.disabled = false; toast(a._msg); } } }, ACTION_BTN[a.type] || 'Do it'));
+
+/* INTENT-START */
+/* Simple commands are understood right here, so they work instantly, offline from the AI, and never depend on the AI answering in the right format. */
+const NUMW = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
+const NW = Object.keys(NUMW).join('|');
+const DAYIDX = { monday: 0, tuesday: 1, wednesday: 2, thursday: 3, friday: 4, saturday: 5, sunday: 6 };
+const say = (text, extra = {}) => ({ reply: text, speech: text, actions: [], local: true, ...extra });
+function resolveBareHour(hh, mm, now) {   // "at 5" -> the next 5 o'clock that is still ahead
+  const cands = [hh % 12, (hh % 12) + 12].map((x) => new Date(now.getFullYear(), now.getMonth(), now.getDate(), x, mm)), next = cands.find((d) => d > now) || cands[0];
+  return `${next.getHours() % 12 || 12}${mm ? ':' + p2(mm) : ''} ${next.getHours() >= 12 ? 'pm' : 'am'}`;
+}
+function normalizeSpeech(t, now = new Date()) {   // "five thirty p m" -> "5:30 pm", "half past six" -> "6:30", "at 5" -> "5 pm"
+  let s = ' ' + String(t).replace(/[“”"]/g, '').replace(/\s+/g, ' ') + ' ';
+  s = s.replace(/\b([ap])\.? ?m\b\.?/gi, (m, x) => x.toLowerCase() + 'm').replace(/\b(noon|midday)\b/gi, '12 pm').replace(/\bmidnight\b/gi, '12 am');
+  s = s.replace(new RegExp(`\\bhalf past (${NW})\\b`, 'gi'), (m, w) => `${NUMW[w.toLowerCase()]}:30`).replace(new RegExp(`\\bquarter past (${NW})\\b`, 'gi'), (m, w) => `${NUMW[w.toLowerCase()]}:15`)
+    .replace(new RegExp(`\\bquarter to (${NW})\\b`, 'gi'), (m, w) => `${(NUMW[w.toLowerCase()] + 10) % 12 + 1}:45`);
+  s = s.replace(new RegExp(`\\b(${NW})(?: (thirty|fifteen|forty[ -]?five|oh five|ten|twenty))? ?(?=(?:am|pm)\\b)`, 'gi'), (m, w, mm) => `${NUMW[w.toLowerCase()]}${mm ? ':' + ({ thirty: '30', fifteen: '15', ten: '10', twenty: '20', 'oh five': '05' }[mm.toLowerCase()] || '45') : ''} `);
+  s = s.replace(new RegExp(`\\b(at|by|from|to|until|till) (${NW})\\b(?! ?(?:am|pm))`, 'gi'), (m, p, w) => `${p} ${NUMW[w.toLowerCase()]}`);
+  s = s.replace(/\b(\d{1,2})(?::(\d{2}))? (?:in the )?(morning|afternoon|evening|at night)\b/gi, (m, hh, mm, part) => `${hh}${mm ? ':' + mm : ''} ${/morning/i.test(part) || (+hh === 12 && /night/i.test(part)) ? 'am' : 'pm'}`);
+  s = s.replace(/\bat (\d{1,2})(?::(\d{2}))?(?! ?(?:am|pm|:\d|\d))/gi, (m, hh, mm) => (+hh >= 1 && +hh <= 12 ? 'at ' + resolveBareHour(+hh, +(mm || 0), now) : m));
+  return s.trim();
+}
+function relativeTime(s, now) {   // "in 30 minutes", "in an hour", "in half an hour"
+  const m = s.match(/\bin (\d+|an?|half an) (minutes?|mins?|hours?|hrs?)\b/i); if (!m) return null;
+  const n = /half/i.test(m[1]) ? 0.5 : /^an?$/i.test(m[1]) ? 1 : +m[1], d = new Date(now.getTime() + (/^h/i.test(m[2]) ? n * 60 : n) * 60000);
+  return { due: ymd(d), time: `${p2(d.getHours())}:${p2(d.getMinutes())}`, rest: s.replace(m[0], ' ') };
+}
+function taskFromPhrase(phrase, now) {
+  let s = normalizeSpeech(phrase, now).replace(/\b(high|medium|low) priority\b/gi, '!$1').replace(/\b(urgent(ly)?|asap)\b/gi, '!high');
+  const rel = relativeTime(s, now); if (rel) s = rel.rest; const p = parseQuick(s.trim());
+  let title = p.title.replace(/\b(in the )?(morning|afternoon|evening|tonight)\b/gi, ' ').replace(/\s+/g, ' ').trim().replace(/^(?:to|that|about|for|called|named|:)\s+/i, '').replace(/\s+(?:please|for me|thanks)$/i, '').replace(/\s+(?:to|at|on|for|by)$/i, '').replace(/\s+/g, ' ').trim();
+  let due = p.due || '', time = p.due_time || '';
+  if (rel) { due = rel.due; time = rel.time; }
+  else if (due && !time) time = /\bmorning\b/i.test(phrase) ? '08:00' : /\bafternoon\b/i.test(phrase) ? '14:00' : /\bevening\b/i.test(phrase) ? '18:00' : /\btonight\b/i.test(phrase) ? '20:00' : '';
+  title = title.charAt(0).toUpperCase() + title.slice(1);
+  const weekly = /\bevery (?:mon|tues|wednes|thurs|fri|satur|sun)day\b/i.test(phrase);
+  return { type: 'add_task', title, due, time, priority: p.priority, tags: p.tags, recurring: weekly ? 'weekly' : p.recurring || 'none' };
+}
+function minutesOf(h12, mm, ap) { let hh = +h12 % 12; if (/pm/i.test(ap)) hh += 12; return hh * 60 + (+mm || 0); }
+function timetableFromPhrase(phrase, now) {
+  const s = normalizeSpeech(phrase, now);
+  const r = s.match(/(?:\b(?:from|between|at)\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:to|until|till|and|-|–)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i); if (!r) return null;
+  let [, h1, m1, a1, h2, m2, a2] = r;
+  if (!a1 && !a2) { a1 = +h1 >= 1 && +h1 <= 6 ? 'pm' : +h1 === 12 ? 'pm' : 'am'; a2 = +h2 < +h1 && a1 === 'am' ? 'pm' : a1; } else if (!a1) a1 = (+h1 > +h2 && /pm/i.test(a2)) ? 'am' : a2; else if (!a2) a2 = a1;
+  let start = minutesOf(h1, m1, a1), end = minutesOf(h2, m2, a2); if (end <= start) end += 12 * 60; if (end > 1439 || start > 1439) return null;
+  let days = [...new Set([...s.matchAll(/\b(mon|tues|wednes|thurs|fri|satur|sun)day(?:s)?\b/gi)].map((x) => DAYIDX[x[1].toLowerCase() + 'day']))];
+  if (!days.length) days = /\b(every ?day|daily|each day)\b/i.test(s) ? [0, 1, 2, 3, 4, 5, 6] : /\bweekdays?\b/i.test(s) ? [0, 1, 2, 3, 4] : /\bweekends?\b/i.test(s) ? [5, 6]
+    : /\btomorrow\b/i.test(s) ? [(todayIdx(now) + 1) % 7] : /\btoday\b/i.test(s) ? [todayIdx(now)] : [];
+  if (!days.length) return null;
+  let title = s.replace(r[0], ' ').replace(/\b(?:mon|tues|wednes|thurs|fri|satur|sun)days?\b/gi, ' ').replace(/\b(every ?day|daily|each day|weekdays?|weekends?|today|tomorrow)\b/gi, ' ')
+    .replace(/\b(?:to|in|on) (?:my|the) (?:timetable|schedule)\b/gi, ' ').replace(/^\s*(?:add|schedule|put|create|set up|new)\b\s*(?:a |an |the )?(?:new )?(?:timetable |activity |entry |event )?(?:called |named |for )?/i, ' ')
+    .replace(/\b(?:every|each|on|and|from|at|between)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+  title = title.charAt(0).toUpperCase() + title.slice(1);
+  return { type: 'add_timetable', title: title || 'Class', days, start: `${p2(Math.floor(start / 60))}:${p2(start % 60)}`, end: `${p2(Math.floor(end / 60))}:${p2(end % 60)}` };
+}
+function agendaAnswer(now) {
+  const open = S.tasks.filter((t) => !t.completed_at).sort(smart), od = open.filter((t) => state(t, now) === 'overdue'), todays = open.filter((t) => ['today', 'overdue'].includes(state(t, now)));
+  const cur = currentEntries(now)[0], nx = nextEntry(now), parts = [];
+  parts.push(open.length ? `You have ${open.length} open task${open.length > 1 ? 's' : ''}${od.length ? `, ${od.length} overdue` : ''}.` : 'You have no open tasks.');
+  const top = (todays.length ? todays : open).slice(0, 3); if (top.length) parts.push('First: ' + top.map((t) => t.title + (t.due ? ' (' + dueLabel(t, now).toLowerCase() + ')' : '')).join(', then ') + '.');
+  if (cur) parts.push(`Right now you have ${cur.title} until ${fmtMin(cur.end)}.`);
+  if (nx) parts.push(`Next on your timetable: ${nx.e.title} ${nx.off === 0 ? 'today' : nx.off === 1 ? 'tomorrow' : 'on ' + DF[nx.e.day]} at ${fmtMin(nx.e.start)}.`);
+  return say(parts.join(' '));
+}
+const PAGES = { home: 'home', tasks: 'tasks', task: 'tasks', 'to-do': 'tasks', todo: 'tasks', list: 'tasks', timetable: 'timetable', schedule: 'timetable', diary: 'notes', journal: 'notes', notes: 'notes', note: 'notes', calendar: 'tasks', profile: 'me', settings: 'me' };
+function localIntent(raw, now = new Date()) {
+  let t = String(raw).trim().replace(/[.!?]+$/g, '').replace(/^(?:hey|ok|okay|hi)[, ]+do[ -]?it[, ]+/i, '').replace(/^(?:please|can you|could you|would you|will you|i want you to|i would like you to|i'd like you to|go ahead and)\s+/i, '').replace(/\s+please$/i, '').trim(), m;
+  if (!t) return null;
+  if (/^(?:hi|hello|hey|good (?:morning|afternoon|evening))\b[^a-z]*$/i.test(t)) return say(`Hi ${boot.user.name}! What would you like me to do?`);
+  if (/\bwhat can you do\b|^help( me)?$/i.test(t)) return say('I can add tasks and reminders, schedule classes in your timetable, mark things done, write in your diary, start a focus timer, open any page, and read out your list and your next activity. Just tell me.');
+  if (/\bwhat(?:'s| is)? the time\b|\bwhat time is it\b/i.test(t)) return say('It is ' + fmtTime(now) + '.');
+  if (/\bwhat(?:'s| is)? (?:the |today's )?date\b|\bwhat day is (?:it|today)\b/i.test(t)) return say('Today is ' + now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' }) + '.');
+  if (m = t.match(/^(?:open|go to|show(?: me)?|take me to|switch to)\s+(?:my |the )?([a-z-]+)(?: page| tab| list)?$/i)) { const tab = PAGES[m[1].toLowerCase()]; if (tab) return { reply: `Opening ${m[1]}.`, speech: `Opening your ${m[1]}.`, actions: [{ type: 'open', tab }], local: true }; }
+  if (/\b(?:delete|remove|erase|clear)\b.*\b(?:task|tasks|reminder|timetable|diary|account|everything|entry|activity)\b/i.test(t)) return say('For safety I do not delete things by voice. You can delete it from the Tasks or Timetable page.');
+  if (/\b(?:start|begin|run|set)\b.*\b(?:focus|pomodoro|study)\b|\b(?:start|begin) (?:a |the |my )?(?:\d+[ -]?(?:minute|min)\s+)?timer\b/i.test(t)) { const n = t.match(/(\d{1,3})[\s-]*(?:minute|min)/i); return { reply: 'Starting your focus timer.', speech: 'Starting your focus timer.', actions: [{ type: 'start_focus', minutes: n ? Math.min(120, +n[1]) : 25 }], local: true }; }
+  if ((m = t.match(/^(?:mark|set|tick|check|cross)\s+(?:off\s+)?(?:my\s+|the\s+)?(.+?)\s+(?:as\s+)?(?:done|complete|completed|finished)$/i)) || (m = t.match(/^(?:i(?:'ve| have)?\s+)?(?:finished|completed|done with)\s+(?:my\s+|the\s+)?(.+)$/i)) || (m = t.match(/^(?:complete|finish|tick off|check off|cross off|mark off)\s+(?:my\s+|the\s+)?(.+)$/i))) {
+    const task = bestTitleMatch(S.tasks.filter((x) => !x.completed_at), m[1]); if (!task) return say(`I could not find a task like “${m[1]}” among your open tasks.`);
+    return { reply: `Marking “${task.title}” as done.`, speech: '', actions: [{ type: 'complete_task', id: task.id, title: task.title }], local: true };
+  }
+  if ((m = t.match(/^(?:write|add|put|note|record|save|jot)\s+(?:down\s+)?(?:in|into|to|on)\s+(?:my\s+)?(?:diary|journal|notes?)(?:\s+(?:that|to say|saying|:))?\s*,?\s*(.*)$/i)) || (m = t.match(/^dear diary,?\s*(.+)$/i))) {
+    if (!m[1] || m[1].trim().length < 2) return say('What should I write in your diary?', { ask: 'diary' });
+    return { reply: 'Writing that in your diary.', speech: '', actions: [{ type: 'add_note', text: m[1].trim().charAt(0).toUpperCase() + m[1].trim().slice(1) }], local: true };
+  }
+  if (/^(?:add|schedule|put|create|set up|new)\b/i.test(t) && !/\b(?:task|todo|to-do|reminder|remind|alarm)\b/i.test(t)) {
+    const a = timetableFromPhrase(t, now); if (a) return { reply: 'Adding that to your timetable.', speech: '', actions: [a], local: true };
+  }
+  if (/\b(?:what(?:'s| is| do| should| have)?|tell me|read(?: out)?|how many)\b.*\b(?:next|today|list|tasks?|agenda|schedule|timetable|to-?do|first|now|left|open)\b/i.test(t) && !/\b(?:add|create|remind|set|schedule|mark|put)\b/i.test(t)) return agendaAnswer(now);
+  if ((m = t.match(/^(?:add|create|make|put|set up|new)\s+(?:a\s+|an\s+|the\s+)?(?:new\s+)?(?:task|todo|to-?do|reminder|alarm)\s*(?:called|named|to|for|that|about|:)?\s*(.*)$/i)) || (m = t.match(/^remind me\s*(?:to|about|of|that)?\s*(.*)$/i))
+    || (m = t.match(/^set\s+(?:an?\s+)?(?:alarm|reminder|timer)\s+(?:for|at|to|in)\s+(.+)$/i)) || (m = t.match(/^(?:don'?t let me forget|i need to|i have to|i must|i should|i want to|i got to)\s+(.+)$/i))) {
+    const a = taskFromPhrase(/^set\s/i.test(t) ? (/^set\s+(?:an?\s+)?(?:alarm|reminder|timer)\s+in\b/i.test(t) ? 'in ' + m[1] : m[1]) : m[1] || '', now);
+    if (!a.title) { if (a.due) a.title = /alarm/i.test(t) ? 'Alarm' : 'Reminder'; else return say('What should the task be?', { ask: 'task' }); }
+    return { reply: 'Adding that task.', speech: '', actions: [a], local: true };
+  }
+  if ((m = t.match(/^(?:add|put)\s+(.+?)\s+(?:to|on|onto)\s+(?:my\s+)?(?:to-?do|tasks?|list|reminders?)(?:\s+list)?\s*(.*)$/i))) return { reply: 'Adding that task.', speech: '', actions: [taskFromPhrase(m[1] + ' ' + m[2], now)], local: true };
+  return null;
+}
+/* INTENT-END */
+if (store.get('debug', '') === '1') window.__doit = { localIntent, normalizeSpeech, taskFromPhrase, timetableFromPhrase };
+
+async function showReply(res, opts) {   // shows the answer, then does (or offers) the actions
+  const acts = res.actions || [], m = bubble('bot', res.reply || ''); let failed = '', okMsgs = [];
+  if (acts.length && !opts.suggest && (opts.voice || res.local || store.get('aiAuto', 'on') === 'on')) {   // "do it for me"
+    const lines = []; for (const a of acts) { const ok = await applyAction(a); lines.push((ok ? '✓ ' : '✗ ') + a._msg); if (ok) okMsgs.push(a._msg); else if (!failed) failed = a._msg; }
+    m.append(h('div', { class: 'act-done' }, lines.map((x) => h('div', {}, x)))); $('ai-log').scrollTop = 1e9;
+  } else if (acts.length) {
+    const box = h('div', { class: 'act-list' }, acts.map(actionCard));
+    if (acts.length > 1) box.append(h('button', { class: 'btn sm', type: 'button', onclick: async (e) => { e.target.disabled = true; for (const a of acts) await applyAction(a); e.target.textContent = 'All done ✓';
+      box.querySelectorAll('.act-card .btn').forEach((x) => { x.disabled = true; x.textContent = 'Done ✓'; }); } }, 'Do all'));
+    m.append(box); $('ai-log').scrollTop = 1e9;
+  }
+  if (!m.firstChild) m.remove();
+  const speech = failed ? 'Sorry. ' + failed : res.local && okMsgs.length ? 'Done. ' + okMsgs.join('. ') : res.speech || res.reply;
+  return { speech, ok: !failed };
+}
 async function sendAI(text, opts = {}) {
-  text = (text || '').trim(); if (!text) return null; if (!A.ai_enabled) { toast('AI is not set up on this server yet.'); return null; }
-  bubble('user', text); $('ai-input').value = ''; const typing = bubble('bot typing', 'Thinking…'); $('ai-send').disabled = true;
+  text = (text || '').trim(); if (!text) return null;
+  bubble('user', text); $('ai-input').value = '';
   if (aiMode === 'goal') {
-    aiMode = 'chat'; $('ai-input').placeholder = 'Ask me anything, or tell me what to do…';
+    if (!A.ai_enabled) { aiMode = 'chat'; bubble('bot', 'Breaking a goal into steps needs the AI key.'); return { speech: 'Breaking a goal into steps needs the AI key.' }; }
+    aiMode = 'chat'; $('ai-input').placeholder = 'Ask me anything, or tell me what to do…'; const typing = bubble('bot typing', 'Thinking…'); $('ai-send').disabled = true;
     const r = await api('POST', '/api/ai/breakdown', { goal: text }); typing.remove(); $('ai-send').disabled = false;
     if (!r) { bubble('bot', lastError || 'Sorry, I could not do that right now.'); return null; }
     bubble('bot', h('b', {}, r.title), h('ol', {}, r.steps.map((x) => h('li', {}, x))),
@@ -1018,23 +1134,20 @@ async function sendAI(text, opts = {}) {
         if (t) { put(t.task); S.open.add(t.task.id); render(); e.target.textContent = 'Added to your tasks ✓'; toast('Task with checklist added'); } else e.target.disabled = false; } }, 'Add as a task with checklist'));
     return { speech: `Here is a checklist for ${r.title}.` };
   }
-  aiHist.push({ role: 'user', content: text });
-  const r = await api('POST', '/api/ai/chat', { messages: aiHist, now: ymdhm(new Date()), voice: !!opts.voice }, { quiet: !!opts.voice }); typing.remove(); $('ai-send').disabled = false;
-  if (!r) { aiHist.pop(); const why = lastError || 'Sorry, I could not answer just now. Please try again.'; bubble('bot', why); return { speech: 'Sorry, ' + why.split('. ')[0] }; }
-  aiHist.push({ role: 'assistant', content: r.reply }); const m = bubble('bot', r.reply), acts = r.actions || [];
-  let failed = '';
-  if (acts.length && (opts.voice || store.get('aiAuto', 'off') === 'on')) {   // "do it for me": run the actions right away
-    const lines = []; for (const a of acts) { const ok = await applyAction(a); lines.push((ok ? '✓ ' : '✗ ') + a._msg); if (!ok && !failed) failed = a._msg; }
-    m.append(h('div', { class: 'act-done' }, lines.map((x) => h('div', {}, x)))); $('ai-log').scrollTop = 1e9;
-  } else if (acts.length) {
-    const box = h('div', { class: 'act-list' }, acts.map(actionCard));
-    if (acts.length > 1) box.append(h('button', { class: 'btn sm', type: 'button', onclick: async (e) => { e.target.disabled = true; for (const a of acts) await applyAction(a); e.target.textContent = 'All done ✓';
-      box.querySelectorAll('.act-card .btn').forEach((x) => { x.disabled = true; x.textContent = 'Done ✓'; }); } }, 'Do all'));
-    m.append(box); $('ai-log').scrollTop = 1e9;
+  // 1) simple commands are handled right here, instantly, and work even when the AI is off
+  let li = null;
+  if (pendingAsk) { const kind = pendingAsk; pendingAsk = null; li = localIntent(text) || localIntent((kind === 'diary' ? 'write in my diary ' : 'add a task ') + text); } else li = localIntent(text);
+  if (li) {
+    if (li.ask) pendingAsk = li.ask; aiHist.push({ role: 'user', content: text }); const out = await showReply(li, opts); aiHist.push({ role: 'assistant', content: out.speech || li.reply });
+    if (!opts.voice && speakOn()) speak(out.speech); return out;
   }
-  const speech = failed ? 'Sorry, ' + failed : r.speech || r.reply;
-  if (!opts.voice && speakOn()) speak(speech);
-  return { speech };
+  // 2) everything else goes to the AI
+  if (!A.ai_enabled) { const msg = 'I can do simple commands like adding a task, marking one as done, or reading your list. For anything else, the AI key needs to be set up on the server.'; bubble('bot', msg); return { speech: msg }; }
+  aiHist.push({ role: 'user', content: text }); const typing = bubble('bot typing', 'Thinking…'); $('ai-send').disabled = true;
+  const r = await api('POST', '/api/ai/chat', { messages: aiHist, now: ymdhm(new Date()), voice: !!opts.voice }, { quiet: true }); typing.remove(); $('ai-send').disabled = false;
+  if (!r) { aiHist.pop(); const why = lastError || 'Sorry, I could not answer just now. Please try again.'; bubble('bot', why); return { speech: 'Sorry. ' + why.split('. ')[0] }; }
+  aiHist.push({ role: 'assistant', content: r.reply }); const out = await showReply({ reply: r.reply, speech: r.speech, actions: r.actions }, opts);
+  if (!opts.voice && speakOn()) speak(out.speech); return out;
 }
 $('ai-form').addEventListener('submit', (e) => { e.preventDefault(); sendAI($('ai-input').value); });
 $('ai-speak').addEventListener('change', (e) => { store.set('speakReplies', e.target.checked ? 'on' : 'off'); if (!e.target.checked && 'speechSynthesis' in window) speechSynthesis.cancel(); const p = $('speak-on'); if (p) p.checked = e.target.checked; });
@@ -1044,43 +1157,79 @@ function pickVoice(lang) {
   const vs = 'speechSynthesis' in window ? speechSynthesis.getVoices() : []; if (!vs.length) return null; const l = lang.toLowerCase(), pre = l.split('-')[0];
   return vs.find((v) => v.lang.toLowerCase().replace('_', '-') === l) || vs.find((v) => v.lang.toLowerCase().startsWith(pre) && /natural|google|female|aria|zira|samantha/i.test(v.name)) || vs.find((v) => v.lang.toLowerCase().startsWith(pre)) || null;
 }
+let lastSpoken = '';
 function speak(text) {
   return new Promise((resolve) => {
-    if (!('speechSynthesis' in window) || !text) return resolve();
+    lastSpoken = String(text || ''); if (!('speechSynthesis' in window) || !text) return resolve();
     const u = new SpeechSynthesisUtterance(String(text).replace(/[*_#`]/g, '')); u.lang = langCode(); const v = pickVoice(u.lang); if (v) u.voice = v; u.rate = 1.02;
     let done = false; const end = () => { if (!done) { done = true; resolve(); } }; u.onend = end; u.onerror = end; setTimeout(end, 25000);
-    try { speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) { end(); }
+    try { speechSynthesis.cancel(); if (speechSynthesis.resume) speechSynthesis.resume(); speechSynthesis.speak(u); } catch (e) { end(); }
   });
+}
+const wordsOf = (s) => String(s).toLowerCase().replace(/[^a-z0-9' ]/g, ' ').split(/\s+/).filter(Boolean);
+function isEcho(heard) {   // the microphone sometimes hears the assistant's own voice
+  const a = wordsOf(heard), b = new Set(wordsOf(lastSpoken)); return a.length >= 3 && a.filter((w) => b.has(w)).length / a.length >= 0.75;
 }
 /* voice conversation: listen, think, answer out loud, listen again */
-const V = { on: false, rec: null, misses: 0 };
-const vStatus = (t) => { $('ai-voice-status').hidden = !t; $('ai-vs-text').textContent = t || ''; aiDlg.classList.toggle('voice-on', !!t); };
-function listenOnce() {
+const V = { on: false, rec: null, misses: 0, srBad: false, lang: '' };
+const vStatus = (t, sub) => { $('ai-voice-status').hidden = !t; $('ai-vs-text').textContent = t || ''; $('ai-vs-sub').textContent = sub || 'Say “stop” to end'; aiDlg.classList.toggle('voice-on', !!t); };
+function listenSR() {   // the browser's own speech recognition (Chrome, Edge, Safari)
   return new Promise((resolve) => {
-    if (!SR) return resolve(''); const r = new SR(); r.lang = langCode(); r.interimResults = true; r.continuous = false; let text = '', done = false;
-    const finish = (v) => { if (done) return; done = true; V.rec = null; resolve(String(v || '').trim()); };
-    r.onresult = (e) => { let fin = '', itm = ''; for (let i = 0; i < e.results.length; i++) { const x = e.results[i]; if (x.isFinal) fin += x[0].transcript; else itm += x[0].transcript; } text = fin || itm; $('ai-input').value = text; if (fin) finish(fin); };
-    r.onerror = (e) => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { toast('Microphone is blocked. Allow it in your browser, then try again.'); V.on = false; } finish(''); };
-    r.onend = () => finish(text); V.rec = r; try { r.start(); } catch (e) { finish(''); }
+    const r = new SR(); r.lang = V.lang || langCode(); r.interimResults = true; r.continuous = false; let text = '', done = false;
+    const finish = (res) => { if (done) return; done = true; clearTimeout(guard); V.rec = null; try { r.abort(); } catch (e) {} resolve(res); };
+    const guard = setTimeout(() => finish({ ok: true, text: text.trim() }), 14000);   // never wait forever
+    r.onresult = (e) => { let fin = '', itm = ''; for (let i = 0; i < e.results.length; i++) { const x = e.results[i]; if (x.isFinal) fin += x[0].transcript; else itm += x[0].transcript; }
+      text = fin || itm; vStatus('Listening…', text ? '“' + text + '”' : ''); if (fin) finish({ ok: true, text: fin.trim() }); };
+    r.onerror = (e) => {
+      if (e.error === 'not-allowed') { toast('Microphone is blocked. Click the lock icon next to the address, allow the microphone, then tap Talk to me again.'); V.on = false; finish({ ok: true, text: '' }); }
+      else if (e.error === 'language-not-supported' && V.lang !== 'en-US') { V.lang = 'en-US'; finish({ ok: true, text: '', retry: true }); }
+      else if (e.error === 'network' || e.error === 'service-not-allowed' || e.error === 'language-not-supported') finish({ ok: false, why: e.error });
+      else if (e.error === 'audio-capture') { toast('No microphone was found on this device.'); V.on = false; finish({ ok: true, text: '' }); }
+      else finish({ ok: true, text: text.trim() }); };
+    r.onend = () => finish({ ok: true, text: text.trim() }); V.rec = r; try { r.start(); } catch (e) { finish({ ok: false, why: 'start' }); }
   });
 }
-async function voiceLoop() {
-  try { await voiceTurns(); } catch (e) { console.warn('Voice assistant stopped:', e); } finally { if (V.on) stopVoice(); }
+async function recordOnce() {   // for browsers without speech recognition: record until you stop talking, then let Gemini write it down
+  if (!(A.voice_ai && navigator.mediaDevices && window.MediaRecorder)) return null;
+  let stream; try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { toast('Microphone is blocked. Allow it in your browser, then tap Talk to me again.'); V.on = false; return ''; }
+  const Ctx = window.AudioContext || window.webkitAudioContext, ctx = new Ctx(), an = ctx.createAnalyser(); an.fftSize = 1024; ctx.createMediaStreamSource(stream).connect(an);
+  const buf = new Uint8Array(an.fftSize), chunks = [], rec = new MediaRecorder(stream); rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+  const stopped = new Promise((res) => { rec.onstop = res; }); rec.start(); const t0 = Date.now(); let lastVoice = 0, spoke = false;
+  await new Promise((res) => { const iv = setInterval(() => { an.getByteTimeDomainData(buf); let sum = 0; for (const x of buf) sum += Math.abs(x - 128); const now = Date.now();
+    if (sum / buf.length > 5) { spoke = true; lastVoice = now; vStatus('Listening…', 'I can hear you'); }
+    if ((spoke && now - lastVoice > 1300) || now - t0 > 15000 || (!spoke && now - t0 > 7000) || !V.on) { clearInterval(iv); res(); } }, 100); });
+  try { rec.stop(); } catch (e) {} await stopped; stream.getTracks().forEach((x) => x.stop()); try { ctx.close(); } catch (e) {}
+  if (!spoke || !V.on) return '';
+  vStatus('Writing it down…'); const wav = await blobToWav16k(new Blob(chunks, { type: rec.mimeType || 'audio/webm' }));
+  const r = await api('POST', '/api/ai/transcribe', { audio: await blobToB64(wav), lang: langCode() }, { quiet: true }); return r ? (r.text || '').trim() : '';
 }
+async function listenOnce() {
+  if (SR && !V.srBad) {
+    let res = await listenSR(); if (res.retry) res = await listenSR();
+    if (res.ok) return res.text;
+    V.srBad = true; toast(res.why === 'network' ? 'Your browser could not reach its speech service (Brave and some privacy browsers block it). Switching to another way of listening…' : 'This browser’s speech recognition is not available. Switching to another way of listening…');
+  }
+  const t = await recordOnce();
+  if (t === null) { stopVoice(); toast('Voice needs Chrome, Edge or Safari. You can still type your commands in the box.'); return ''; }
+  return t;
+}
+async function voiceLoop() { try { await voiceTurns(); } catch (e) { console.warn('Voice assistant stopped:', e); } finally { if (V.on) stopVoice(); } }
 async function voiceTurns() {
   while (V.on) {
-    vStatus('Listening…'); const heard = await listenOnce(); if (!V.on) break;
-    if (!heard) { if (++V.misses >= 2) { stopVoice(); toast('I did not hear anything, so I stopped listening.'); break; } continue; }
-    V.misses = 0;
-    if (/^(stop|cancel|goodbye|bye|that'?s all|thank you|thanks|never ?mind)\b/i.test(heard) && heard.split(/\s+/).length <= 4) { vStatus('Goodbye'); await speak('Okay. Talk to you later.'); stopVoice(); break; }
-    vStatus('Thinking…'); const r = await sendAI(heard, { voice: true }); if (!V.on) break;
-    vStatus('Speaking…'); await speak(r && r.speech); $('ai-input').value = '';
+    vStatus('Listening…', 'Speak now'); const heard = await listenOnce(); if (!V.on) break;
+    if (!heard || isEcho(heard)) { if (++V.misses >= 3) { stopVoice(); toast('I did not hear anything, so I stopped listening. Tap Talk to me to start again.'); break; } continue; }
+    V.misses = 0; $('ai-input').value = '';
+    if (/^(stop|cancel|goodbye|bye|that'?s all|thank you|thanks|never ?mind|stop listening)\b/i.test(heard) && heard.split(/\s+/).length <= 4) { vStatus('Goodbye'); await speak('Okay. Talk to you later.'); stopVoice(); break; }
+    vStatus('Thinking…', '“' + heard + '”'); const r = await sendAI(heard, { voice: true }); if (!V.on) break;
+    vStatus('Speaking…', r && r.speech ? r.speech.slice(0, 90) : ''); await speak(r && r.speech); await sleep(700);
   }
   if (!V.on) vStatus('');
 }
 function startVoice() {
-  if (!SR) return toast('The voice assistant needs Chrome, Edge or Safari.'); if (!A.ai_enabled) return toast('AI is not set up on this server yet.');
-  if (V.on) return; stopWake(); armAudio(); if (!aiDlg.open) openAI(); V.on = true; V.misses = 0; $('ai-talk').classList.add('on'); $('ai-talk').lastElementChild.textContent = 'Stop talking'; voiceLoop();
+  if (V.on) return; if (!SR && !(A.voice_ai && window.MediaRecorder)) return toast('Voice needs Chrome, Edge or Safari (or the Gemini key for other browsers). You can still type your commands.');
+  stopWake(); armAudio(); if (!aiDlg.open) openAI(); V.on = true; V.misses = 0; V.lang = ''; $('ai-talk').classList.add('on'); $('ai-talk').lastElementChild.textContent = 'Stop talking';
+  if (!A.ai_enabled) bubble('bot', 'The AI key is not set up, so I will only understand simple commands such as “add a task”, “mark … as done” and “what is next”.');
+  voiceLoop();
 }
 function stopVoice() {
   V.on = false; $('ai-talk').classList.remove('on'); $('ai-talk').lastElementChild.textContent = 'Talk to me'; vStatus(''); $('ai-input').value = '';
