@@ -40,6 +40,7 @@ Then run `flask --app server db upgrade` once. To copy old SQLite data across (o
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string (leave empty for SQLite) |
 | `SECRET_KEY` | Long random string for sessions |
+| `PUBLIC_URL` | Your live website address. Every link inside emails uses it, even if the email was sent from localhost. |
 | `SITE_URL` | Public address, used in SEO tags and the sitemap |
 | `COOKIE_SECURE=1` | HTTPS-only cookies (set in production) |
 | `MAIL_FROM`, `BREVO_API_KEY` | Sender address and Brevo key for emails (free: 300/day) |

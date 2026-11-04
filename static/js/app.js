@@ -1262,6 +1262,7 @@ function paintEmail() {
   $('em-status').textContent = !A.email ? 'Add your email so you can recover your username or password, and receive reminders.'
     : A.verified ? 'Confirmed ✓ — we can email you reminders and recovery links.' : 'Not confirmed yet. Open the confirmation link we emailed you.';
   if (!A.mail_enabled) $('em-status').textContent += ' (Email sending is not set up on this server yet.)';
+  if (A.mail_enabled && A.link_local) $('em-status').textContent += ` ⚠ Links in emails currently open ${A.link_base}, which is only your own computer. Set PUBLIC_URL to your live website address so they work from anywhere.`;
   paintMailBanner(); $('em-resend').hidden = !A.email || A.verified; $('em-rem').checked = !!A.email_reminders; $('em-dig').checked = !!A.email_digest;
 }
 $('em-save').addEventListener('click', async () => {

@@ -207,6 +207,18 @@ class PendingSignup(db.Model):
     sent_at = db.Column(db.DateTime, default=utcnow, nullable=False)
 
 
+class LinkToken(db.Model):
+    """One-time links sent by email (confirm address, reset password). Kept in the database, so a link works on any copy
+    of the app that shares the database (for example the online site and your own computer)."""
+    __tablename__ = "link_token"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    kind = db.Column(db.String(12), nullable=False)
+    data = db.Column(db.String(254))
+    token_hash = db.Column(db.String(64), nullable=False, index=True)
+    expires_at = db.Column(db.DateTime, nullable=False)
+
+
 class EmailLog(db.Model):
     """Remembers which reminder emails were already sent, so nobody is emailed twice."""
     __tablename__ = "email_log"
@@ -516,6 +528,41 @@ def find_by_email(email):
     return User.query.filter(db.func.lower(User.email) == email.lower()).first() if email else None
 
 
+LOCAL_RE = re.compile(r"^https?://(localhost|127\.|0\.0\.0\.0|\[::1\])", re.I)
+
+
+def public_url():
+    """The address put inside emails. It is always the live website when PUBLIC_URL (or a non-local SITE_URL) is set, so links
+    still work when an email was triggered from localhost."""
+    for key in ("PUBLIC_URL", "SITE_URL"):
+        value = (os.environ.get(key) or "").strip().rstrip("/")
+        if value and not LOCAL_RE.match(value):
+            return value
+    return site_url()
+
+
+def links_are_local():
+    return bool(LOCAL_RE.match(public_url()))
+
+
+def _hash(token):
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def make_link_token(user, kind, seconds, data=None):
+    LinkToken.query.filter(LinkToken.expires_at < utcnow()).delete()
+    LinkToken.query.filter_by(user_id=user.id, kind=kind).delete()
+    token = secrets.token_urlsafe(32)
+    db.session.add(LinkToken(user_id=user.id, kind=kind, data=data, token_hash=_hash(token), expires_at=utcnow() + timedelta(seconds=seconds)))
+    db.session.commit()
+    return token
+
+
+def find_link_token(token, kind):
+    row = LinkToken.query.filter_by(token_hash=_hash(token), kind=kind).first()
+    return row if row and row.expires_at > utcnow() else None
+
+
 def serializer(salt):
     return URLSafeTimedSerializer(app.config["SECRET_KEY"], salt=salt)
 
@@ -556,8 +603,8 @@ def try_send(to, subject, heading, intro, lines=(), button=None, footer=""):
 
 
 def send_verification(user):
-    token = serializer("verify-email").dumps({"u": user.id, "e": user.email})
-    link = f"{site_url()}{url_for('verify_email', token=token)}"
+    token = make_link_token(user, "verify", 7 * 86400, data=user.email)
+    link = f"{public_url()}{url_for('verify_email', token=token)}"
     return try_send(user.email, "Confirm your email for Do.iT", "Confirm your email",
                     f"Hi {user.display_name}, please confirm this address so Do.iT can email you task reminders and help you recover your account.",
                     button=("Confirm my email", link), footer="This link works for 7 days.")
@@ -587,7 +634,7 @@ def homepage():
             "account": {"email": user.email or "", "verified": bool(user.email_verified),
                         "email_reminders": bool(user.email_reminders), "email_digest": bool(user.email_digest),
                         "tz": user.tz or "", "mail_enabled": mailer.mail_enabled(), "ai_enabled": ai.ai_enabled(),
-                        "voice_ai": ai.voice_ai_enabled()},
+                        "voice_ai": ai.voice_ai_enabled(), "link_local": links_are_local(), "link_base": public_url()},
             "tasks": [task_json(t) for t in tasks],
             "timetable": [tt_json(e) for e in TimetableEntry.query.filter_by(user_id=user.id)
                           .order_by(TimetableEntry.day, TimetableEntry.start_min).all()],
@@ -634,7 +681,7 @@ def send_signup_email(pending):
     pending.token_hash = hashlib.sha256(token.encode()).hexdigest()
     pending.sent_at = utcnow()
     db.session.commit()
-    link = f"{site_url()}{url_for('confirm_signup', token=token)}"
+    link = f"{public_url()}{url_for('confirm_signup', token=token)}"
     first = (pending.name or pending.username).split(" ")[0]
     return try_send(pending.email, "Confirm your email to finish creating your Do.iT account", "Confirm your email",
                     f"Hi {first}, one last step: confirm your email address to create your Do.iT account.",
@@ -958,8 +1005,8 @@ def forgot():
         else:
             user = find_by_email(email)
             if user:  # the page looks the same whether or not the address exists
-                token = serializer("pw-reset").dumps({"u": user.id, "p": pw_stamp(user)})
-                link = f"{site_url()}{url_for('reset_password', token=token)}"
+                token = make_link_token(user, "reset", 3600)
+                link = f"{public_url()}{url_for('reset_password', token=token)}"
                 try_send(user.email, "Recover your Do.iT account", "Recover your account",
                          f"Your username is {user.username.strip()}. If you also forgot your password, use the button below to choose a new one.",
                          button=("Choose a new password", link),
@@ -970,14 +1017,17 @@ def forgot():
 
 @app.route("/reset/<token>", methods=["GET", "POST"])
 def reset_password(token):
-    try:
-        data = serializer("pw-reset").loads(token, max_age=3600)
-    except (BadSignature, SignatureExpired):
-        return render_template("message.html", title="Link expired", text="This reset link is invalid or has expired. Please request a new one.",
-                               button=("Request a new link", url_for("forgot"))), 400
-    user = db.session.get(User, data.get("u"))
-    if not user or pw_stamp(user) != data.get("p"):
-        return render_template("message.html", title="Link already used", text="This reset link has already been used. Please request a new one.",
+    row = find_link_token(token, "reset")
+    user = db.session.get(User, row.user_id) if row else None
+    if not user:  # links sent by older versions of the app were signed with the secret key
+        try:
+            data = serializer("pw-reset").loads(token, max_age=3600)
+            old = db.session.get(User, data.get("u"))
+            user = old if old and pw_stamp(old) == data.get("p") else None
+        except (BadSignature, SignatureExpired):
+            user = None
+    if not user:
+        return render_template("message.html", title="Link expired or already used", text="This reset link is not valid any more. Please request a new one.",
                                button=("Request a new link", url_for("forgot"))), 400
     error = ""
     if request.method == "POST":
@@ -989,6 +1039,8 @@ def reset_password(token):
         else:
             user.password = generate_password_hash(new)
             user.email_verified = True  # they proved they own the inbox
+            if row:
+                db.session.delete(row)  # a reset link works only once
             db.session.commit()
             return redirect(url_for("login", notice="Password updated. You can sign in now."))
     return render_template("reset.html", error=error, username=user.username.strip())
@@ -996,14 +1048,21 @@ def reset_password(token):
 
 @app.route("/verify/<token>")
 def verify_email(token):
-    try:
-        data = serializer("verify-email").loads(token, max_age=7 * 86400)
-    except (BadSignature, SignatureExpired):
-        return render_template("message.html", title="Link expired", text="This confirmation link is invalid or expired. Sign in and request a new one from your profile.",
+    row = find_link_token(token, "verify")
+    user, email = (db.session.get(User, row.user_id), row.data) if row else (None, None)
+    if not user:  # links sent by older versions of the app were signed with the secret key
+        try:
+            data = serializer("verify-email").loads(token, max_age=7 * 86400)
+            user, email = db.session.get(User, data.get("u")), data.get("e")
+        except (BadSignature, SignatureExpired):
+            user = None
+    if not user:
+        return render_template("message.html", title="Link expired", text="This confirmation link is not valid any more. Sign in and tap 'Resend confirmation' in your profile.",
                                button=("Sign in", url_for("login"))), 400
-    user = db.session.get(User, data.get("u"))
-    if user and user.email == data.get("e"):
+    if user.email == email:
         user.email_verified = True
+        if row:
+            db.session.delete(row)
         db.session.commit()
         return render_template("message.html", title="Email confirmed", text="Thank you! Task and timetable email reminders are now active.",
                                button=("Open Do.iT", url_for("homepage")))
@@ -1068,6 +1127,7 @@ def api_delete_account(user):
     if user.email:
         PendingSignup.query.filter(db.func.lower(PendingSignup.email) == user.email.lower()).delete(synchronize_session=False)
     EmailLog.query.filter_by(user_id=user.id).delete()
+    LinkToken.query.filter_by(user_id=user.id).delete()
     db.session.delete(user)  # tasks, checklists, timetable and diary entries are deleted with it
     db.session.commit()
     session.clear()
@@ -1153,7 +1213,7 @@ def api_test_email(user):
     if not rate_ok(f"testmail:{user.id}", 5, 3600):
         raise ValidationError("Too many test emails. Try again later.")
     err = try_send(user.email, "Test email from Do.iT", "It works!", f"Hi {user.display_name}, this is a test email from Do.iT. Your reminders can reach you.",
-                   button=("Open Do.iT", f"{site_url()}{url_for('homepage')}"))
+                   button=("Open Do.iT", f"{public_url()}{url_for('homepage')}"))
     if err:
         raise ValidationError("The email could not be sent. " + err)
     return jsonify(ok=True)
@@ -1234,7 +1294,7 @@ def run_email_reminders(only_user=None):
     users = [only_user] if only_user else User.query.filter(User.email.isnot(None), User.email_verified.is_(True)).all()
     for user in users:
         local = user_local_now(user)
-        link = f"{site_url()}{url_for('homepage')}"
+        link = f"{public_url()}{url_for('homepage')}"
         tasks = Task.query.filter(Task.user_id == user.id, Task.completed_at.is_(None)).all()
         entries = TimetableEntry.query.filter_by(user_id=user.id).all()
         if user.email_reminders:
